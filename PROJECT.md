@@ -1,4 +1,4 @@
-# PROJECTS.md — sitl_drone ground truth
+# PROJECT.md — sitl_drone ground truth
 
 > **This file is the single source of truth for the state of this project.**
 > It is updated continuously as work happens. If this file and your memory
@@ -95,7 +95,7 @@ requires visualisation, so Phase 2 must also stand up a rendering path — see �
 | Path | What it is |
 |---|---|
 | [README.md](README.md) | Short public-facing overview: goal, mixer map, run commands |
-| [PROJECTS.md](PROJECTS.md) | **This file** — living ground truth |
+| [PROJECT.md](PROJECT.md) | **This file** — living ground truth |
 | [CLAUDE.md](CLAUDE.md) | Rules for agents working in this repo |
 | [AGENTS.md](AGENTS.md) | Pointer to CLAUDE.md, for agents that look for this filename |
 | [docs/ENVIRONMENT_SETUP.md](docs/ENVIRONMENT_SETUP.md) | Full from-scratch provisioning reference (11 sections) |
@@ -306,7 +306,8 @@ itself is not version-controlled here (§3).
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | Renamed `PROJECTS.md` → `PROJECT.md`; updated every reference in `CLAUDE.md`, `AGENTS.md`, `README.md` and `.gitignore` |
 | 2026-08-25 | Assignment received; rewrote §1 around it. Reversed two decisions: a new MAVLink message is now required (not a param), and visualisation is now required (not headless-only). Phases re-cut from 5 to 6 |
-| 2026-08-25 | Added `PROJECTS.md` + `CLAUDE.md`; committed the `docker/` environment (Dockerfile, run.sh, first-run.sh, vendored prereq script) |
+| 2026-08-25 | Added `PROJECT.md` + `CLAUDE.md`; committed the `docker/` environment (Dockerfile, run.sh, first-run.sh, vendored prereq script) |
 | 2026-08-25 | Environment verified end-to-end in the container; image rebuilt with `cppzmq-dev` baked in |
 | 2026-08-25 | Initial commit: `docs/ENVIRONMENT_SETUP.md`, `scripts/setup_env.sh`, README with the mixer map |

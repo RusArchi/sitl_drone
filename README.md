@@ -8,7 +8,7 @@ Stabilize mode.
 
 Environment prep only. No ArduPilot patches yet.
 
-Current state, decisions and next actions live in **[PROJECTS.md](PROJECTS.md)** —
+Current state, decisions and next actions live in **[PROJECT.md](PROJECT.md)** —
 that file is the project's ground truth and is kept up to date as work happens.
 
 ## Goal
@@ -41,7 +41,7 @@ stability patch can rescale.
 Planned trigger: a **new MAVLink message** carrying a motor index 1-4, sendable
 from a MAVProxy terminal and handled in
 `ArduCopter/GCS_MAVLink_Copter.cpp:1179`. The protocol work is deliberate - see
-[PROJECTS.md](PROJECTS.md) §1.
+[PROJECT.md](PROJECT.md) §1.
 
 ## Baseline that needs no code
 
