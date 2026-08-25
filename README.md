@@ -38,9 +38,10 @@ Planned injection point: **`output_to_motors()`, at the `rc_write()` call
 linearisation, so the zero is a genuine final command rather than something the
 stability patch can rescale.
 
-Planned trigger: a new `MOT_KILL_MASK` bitmask parameter (next free index in
-`AP_MotorsMulticopter`'s var_info is **46**; 45 is `IDLE_SEC`), settable live over
-MAVLink so no new protocol work is needed.
+Planned trigger: a **new MAVLink message** carrying a motor index 1-4, sendable
+from a MAVProxy terminal and handled in
+`ArduCopter/GCS_MAVLink_Copter.cpp:1179`. The protocol work is deliberate - see
+[PROJECTS.md](PROJECTS.md) §1.
 
 ## Baseline that needs no code
 

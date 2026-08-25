@@ -188,7 +188,7 @@ sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --no-mavproxy
 
 | Tool | Install | Why |
 |---|---|---|
-| **MAVProxy** | via prereq script (in venv) | Live `param set MOT_KILL_MASK 2` during flight — the on-demand trigger. |
+| **MAVProxy** | via prereq script (in venv) | Hosts the custom `motorfail <1-4>` command during flight — the on-demand trigger. |
 | **pymavlink** | via prereq script (in venv) | The automated test script: arm, takeoff, kill motor, log. |
 | **MAVExplorer** | ships with MAVProxy | Plot dataflash logs — `RATE`, `ATT`, `MOTB`, `RCOU` messages. |
 | **QGroundControl** | optional, AppImage | Only if you want a GUI GCS from your workstation. Not needed on the server. |
@@ -255,7 +255,7 @@ The environment is ready when all of these pass:
 
 That last one is the real end-to-end proof — it exercises the full
 mixer → PWM → `_simulator_servos()` → JSON → Gazebo chain with **zero code changes**,
-and it's the baseline the `MOT_KILL_MASK` work gets compared against.
+and it's the baseline the commanded motor-kill work gets compared against.
 
 ---
 
