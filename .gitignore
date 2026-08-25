@@ -1,0 +1,3 @@
+# agent scratch state — machine-specific and session-scoped.
+# Durable project state belongs in PROJECTS.md.
+.hermes-state.md

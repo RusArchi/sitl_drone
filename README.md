@@ -8,6 +8,9 @@ Stabilize mode.
 
 Environment prep only. No ArduPilot patches yet.
 
+Current state, decisions and next actions live in **[PROJECTS.md](PROJECTS.md)** —
+that file is the project's ground truth and is kept up to date as work happens.
+
 ## Goal
 
 1. Get ArduCopter SITL flying an iris quad in Gazebo.
