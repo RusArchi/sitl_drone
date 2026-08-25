@@ -61,7 +61,8 @@ Don't duplicate the setup guide into `PROJECT.md`; link to it.
   repo. Mixer patches land there; track the diff and the findings here.
 - Anything running `sim_vehicle.py` or a pymavlink script must first
   `source ~/ardupilot/venv-ardupilot/bin/activate` (PEP 668 — see PROJECT.md §4).
-- Env vars set in the container's `~/.bashrc` are invisible to non-interactive
-  `docker exec`. Use `bash -lc '...'` or `docker/run.sh check`.
+- The container is **disposable**: `/home/rusik` is not bind-mounted, so anything
+  written to `~/.bashrc` inside it is lost on recreate. Persistent env belongs in
+  the Dockerfile as `ENV` (that is where the GZ vars now live).
 - ArduPilot line references in `PROJECT.md` §5 are pinned to master `cbe0c39`.
   Re-verify before relying on them, and update the pin when you do.

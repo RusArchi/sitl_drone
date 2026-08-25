@@ -37,7 +37,7 @@ do_build() {
 # also uid 1000, so the ACL carries over and no group juggling is needed. The
 # video/render groups are added anyway, for when no seat ACL is present.
 gui_args() {
-    [[ -n "${DISPLAY:-}" ]] || { echo "" ; return; }
+    [[ -n "${DISPLAY:-}" ]] || return 0
 
     if command -v xhost >/dev/null 2>&1; then
         xhost "+SI:localuser:$(id -un)" >/dev/null 2>&1 || true
@@ -62,14 +62,16 @@ do_run() {
     local gui=()
     mapfile -t gui < <(gui_args)
     if [[ ${#gui[@]} -gt 0 ]]; then
-        echo "display detected ($DISPLAY) — wiring X socket and GPU into the container"
+        echo "display detected (DISPLAY=${DISPLAY:-}) — wiring X socket and GPU in"
     else
-        echo "no DISPLAY — container will be headless (gz sim -s only)"
+        echo "no DISPLAY — container will be headless (gz sim -s only)."
+        echo "  For the GUI, run this from a desktop terminal on this machine,"
+        echo "  not over plain ssh: ./run.sh stop && ./run.sh run"
     fi
 
     docker run -d --name "$NAME" \
         --network host \
-        "${gui[@]}" \
+        ${gui[@]+"${gui[@]}"} \
         -v "$HOME/ardupilot:/home/rusik/ardupilot" \
         -v "$HOME/ardupilot_gazebo:/home/rusik/ardupilot_gazebo" \
         -v "$(dirname "$0")/..:/workspace/sitl_drone" \
@@ -77,6 +79,11 @@ do_run() {
         -w /home/rusik \
         "$IMAGE"
 }
+
+# -it is only valid when stdin is a terminal; without this, `check` fails from
+# scripts and CI with "cannot attach stdin to a TTY-enabled container".
+TTY=()
+[[ -t 0 ]] && TTY=(-it)
 
 case "${1:-run}" in
     build) do_build ;;
@@ -91,12 +98,12 @@ case "${1:-run}" in
         docker exec -it "$NAME" bash -l
         ;;
     gui-check)
-        docker exec -it "$NAME" bash -lc \
+        docker exec "${TTY[@]+"${TTY[@]}"}" "$NAME" bash -lc \
             'echo "DISPLAY=${DISPLAY:-<unset>}"; glxinfo -B 2>&1 | grep -E "OpenGL renderer|OpenGL version|direct rendering" \
              || echo "no GL — recreate the container from a graphical session (./run.sh stop && ./run.sh run)"'
         ;;
     check)
-        docker exec -it "$NAME" bash -lc \
+        docker exec "${TTY[@]+"${TTY[@]}"}" "$NAME" bash -lc \
             'source ~/ardupilot/venv-ardupilot/bin/activate 2>/dev/null; /workspace/sitl_drone/scripts/setup_env.sh --check'
         ;;
     stop)

@@ -71,6 +71,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 USER rusik
 
+# ------------------------------------------------------------- runtime env
+# These live in the IMAGE, not in ~/.bashrc, for two reasons:
+#   1. /home/rusik is not bind-mounted, so bashrc edits made by first-run.sh are
+#      lost every time the container is recreated — and recreating is now normal
+#      (adding the X/GPU mounts requires it).
+#   2. Ubuntu's ~/.bashrc returns early when PS1 is unset, so bashrc-set vars are
+#      invisible to non-interactive `docker exec`. ENV is visible to both.
+# The paths are fixed by the bind-mount contract in run.sh.
+ENV GZ_SIM_SYSTEM_PLUGIN_PATH=/home/rusik/ardupilot_gazebo/build
+ENV GZ_SIM_RESOURCE_PATH=/home/rusik/ardupilot_gazebo/models:/home/rusik/ardupilot_gazebo/worlds
+ENV PATH=/home/rusik/ardupilot/Tools/autotest:$PATH
+
 COPY --chmod=0755 first-run.sh /usr/local/bin/first-run.sh
 
 CMD ["sleep", "infinity"]

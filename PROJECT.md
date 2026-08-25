@@ -78,15 +78,16 @@ Verified working as of 2026-08-25:
 - `scripts/setup_env.sh --check` reports **Environment OK** — gz sim 8.15.0,
   `libArduPilotPlugin.so` built, `arducopter` SITL binary built, venv present,
   `pymavlink` importable.
-- GZ env vars and the ArduPilot `Tools/autotest` PATH entry are in the container's
-  `~/.bashrc` (interactive shells only — Ubuntu's `.bashrc` has an early PS1 guard,
-  so non-interactive `docker exec` does **not** get them; use `bash -lc` or
-  `docker/run.sh check`, which exports them inline).
+- GZ env vars and the `Tools/autotest` PATH entry are baked into the **image** as
+  `ENV` (2026-08-25), so they survive container recreation and are visible to
+  non-interactive `docker exec`. Verified: `docker exec sitl_drone printenv
+  GZ_SIM_SYSTEM_PLUGIN_PATH` returns the path with no login shell.
 
 Nothing is blocked. The next action is Phase 2.
 
 Rendering path added 2026-08-25 (`docker/run.sh` GUI wiring, `ffmpeg` +
-`mesa-utils` in the image) but **not yet verified on screen** — that needs the
+`mesa-utils` in the image). Both `run.sh` code paths tested; the headless path
+runs and `run.sh check` passes. **Not yet verified on screen** — that needs the
 container recreated from a graphical session. See §4.
 
 ---
@@ -288,8 +289,16 @@ Do not rediscover these.
 - `pip` during image build hits flaky PyPI DNS on this router; its retries usually
   save it. `pexpect` was missing from the venv and had to be installed after.
 - The ccache volume came up root-owned and had to be `chown`ed to `rusik` once.
-- Env vars set in `~/.bashrc` are invisible to non-interactive `docker exec` —
-  Ubuntu's `.bashrc` returns early when `PS1` is unset.
+- ~~Env vars set in `~/.bashrc` are invisible to non-interactive `docker exec`~~
+  — **fixed 2026-08-25** by moving them to `ENV` in the Dockerfile. Root cause
+  was Ubuntu's `.bashrc` returning early when `PS1` is unset.
+- **`/home/rusik` is not bind-mounted**, so anything `first-run.sh` writes to
+  `~/.bashrc` is lost when the container is recreated — and recreating is now
+  routine, since adding the X/GPU mounts requires it. Container-persistent state
+  belongs in the image or on a bind mount, not in the container filesystem.
+- `docker exec -it` fails with "cannot attach stdin to a TTY-enabled container"
+  when stdin is not a terminal. `run.sh` now adds `-it` only when `[[ -t 0 ]]`,
+  so `check` works from scripts and agents.
 - Without `GZ_SIM_SYSTEM_PLUGIN_PATH` / `GZ_SIM_RESOURCE_PATH`, `gz sim` starts
   fine and the drone just sits inert — **no error is printed**. #1 setup failure.
 
@@ -340,6 +349,7 @@ itself is not version-controlled here (§3).
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | Fixed `run.sh` GUI path (unbound `DISPLAY` when headless); moved GZ env vars into the image so they survive container recreation and reach non-interactive `docker exec`; made `-it` conditional |
 | 2026-08-25 | Wired the GUI into `docker/run.sh` (X socket, `/dev/dri`, `DISPLAY`, `xhost` auth) and added `ffmpeg` + `mesa-utils` to the image. Corrected §4: this machine has a display and GPUs, so `xvfb`/`x11vnc` are unnecessary |
 | 2026-08-25 | Renamed `PROJECTS.md` → `PROJECT.md`; updated every reference in `CLAUDE.md`, `AGENTS.md`, `README.md` and `.gitignore` |
 | 2026-08-25 | Assignment received; rewrote §1 around it. Reversed two decisions: a new MAVLink message is now required (not a param), and visualisation is now required (not headless-only). Phases re-cut from 5 to 6 |
