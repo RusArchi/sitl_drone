@@ -59,6 +59,18 @@ RUN USER=rusik SKIP_AP_GIT_CHECK=1 SKIP_AP_GRAPHIC_ENV=1 SKIP_AP_COMPLETION_ENV=
     && (sed -i '/\/tmp\/ardupilot\/Tools\/completion\/completion.bash/d; /\/tmp\/ardupilot\/Tools\/autotest/d' /home/rusik/.profile /home/rusik/.bashrc 2>/dev/null || true) \
     && sudo rm -rf /tmp/ardupilot
 
+# ------------------------------------------------------------------ gui extras
+# Deliberately a late layer, not folded into the base apt block: the prereq
+# script above is a ~10-minute layer and this router's apt DNS is flaky
+# (PROJECT.md §7), so adding packages here keeps every expensive layer cached.
+#   ffmpeg     — record the demo flight
+#   mesa-utils — glxinfo, to tell working GL from a silent software fallback
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg mesa-utils \
+    && rm -rf /var/lib/apt/lists/*
+USER rusik
+
 COPY --chmod=0755 first-run.sh /usr/local/bin/first-run.sh
 
 CMD ["sleep", "infinity"]

@@ -155,9 +155,13 @@ the plugin never loads and there is no loud error. It's the #1 setup failure.
 
 ---
 
-## 6. Headless operation (likely, on a home server)
+## 6. Headless operation
 
-Gazebo's `ogre2` renderer wants OpenGL. Two options:
+Gazebo's `ogre2` renderer wants OpenGL. Two options.
+
+> **On this project's machine, neither is needed** — it has a real display and
+> two GPUs, and `docker/run.sh` wires them into the container. See PROJECT.md §4.
+> This section stays for provisioning a genuinely headless box.
 
 **A. Server-only (recommended).** Skips rendering entirely. Physics still runs, so
 motor kill tests work fine — you just can't see it.

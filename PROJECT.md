@@ -55,7 +55,7 @@ Two consequences worth stating up front, because both reverse earlier assumption
 | # | Phase | State |
 |---|---|---|
 | 1 | Provision the build/sim environment | **Done** |
-| 2 | ArduCopter SITL flying an iris quad in Gazebo, with visualisation | **Not started** |
+| 2 | ArduCopter SITL flying an iris quad in Gazebo, with visualisation | **Not started** (GUI plumbing done, unverified) |
 | 3 | Baseline: kill a rotor with `SIM_ENGINE_FAIL` (no code change) | **Not started** |
 | 4 | Define the new MAVLink message; regenerate C headers + pymavlink | **Not started** |
 | 5 | Handle it in Copter; propagate motor index down to the ESC output | **Not started** |
@@ -85,8 +85,9 @@ Verified working as of 2026-08-25:
 
 Nothing is blocked. The next action is Phase 2.
 
-Note: the environment was provisioned for **headless** operation. The assignment
-requires visualisation, so Phase 2 must also stand up a rendering path — see §4.
+Rendering path added 2026-08-25 (`docker/run.sh` GUI wiring, `ffmpeg` +
+`mesa-utils` in the image) but **not yet verified on screen** — that needs the
+container recreated from a graphical session. See §4.
 
 ---
 
@@ -101,7 +102,7 @@ requires visualisation, so Phase 2 must also stand up a rendering path — see �
 | [docs/ENVIRONMENT_SETUP.md](docs/ENVIRONMENT_SETUP.md) | Full from-scratch provisioning reference (11 sections) |
 | [scripts/setup_env.sh](scripts/setup_env.sh) | Host provisioner; `--check` verifies without changing anything |
 | [docker/Dockerfile](docker/Dockerfile) | Reproducible Ubuntu 24.04 build/sim image |
-| [docker/run.sh](docker/run.sh) | `build` / `run` / `shell` / `check` / `stop` wrapper |
+| [docker/run.sh](docker/run.sh) | `build` / `run` / `shell` / `check` / `gui-check` / `stop` wrapper; wires the GUI in when `DISPLAY` is set |
 | [docker/first-run.sh](docker/first-run.sh) | One-time in-container provisioning against the bind-mounted clones (idempotent) |
 | [docker/install-prereqs-ubuntu.sh](docker/install-prereqs-ubuntu.sh) | Vendored copy of ArduPilot's official prereq script (see §6) |
 | `docker/Tools/completion/completion.bash` | Vendored; the prereq script above requires it to exist |
@@ -126,20 +127,49 @@ trees; this repo tracks the patch, the tooling and the findings.
 The container uses `--network host` and a uid/gid-1000 `rusik` user matching the
 host, so build artifacts written through the bind mounts stay usable host-side.
 
-### Visualisation (required by the assignment — not yet set up)
+### Visualisation
 
-The environment currently runs headless (`gz sim -s`), which was fine for physics
-but does not satisfy demo deliverable #1. Options, in preference order:
+This machine is **not** a headless server — an earlier assumption in
+`docs/ENVIRONMENT_SETUP.md` §6 that turned out to be wrong. Verified 2026-08-25:
+GNOME/Wayland session running, X sockets `:0` and `:1` present, Intel HD 630
+(`00:02.0`) + NVIDIA GTX 1050 Ti (`01:00.0`, driver 580.173.02), `/dev/dri`
+render nodes available. So `xvfb`/`x11vnc` are **not needed**; render for real.
 
-1. **`gz sim` GUI on a machine with a display.** Simplest if one is available.
-2. **`xvfb-run` + `x11vnc`** on the headless box, recording the virtual display.
-   `docs/ENVIRONMENT_SETUP.md` §6 option B already lists the packages.
-3. **Gazebo video-recording** of the crash, if a live view is impractical.
+`docker/run.sh` wires the GUI in automatically **when `DISPLAY` is set at
+container-creation time** — X socket, `/dev/dri`, `DISPLAY`, plus
+`xhost +SI:localuser:` for auth. With `DISPLAY` unset it silently omits all of
+it and the container is headless as before. Two consequences:
 
-The container runs `--network host` and has no display wired in; whichever option
-is chosen needs `DISPLAY` plumbing added to `docker/run.sh`.
+- **The container must be created from a graphical session** on this machine.
+  `./run.sh stop && ./run.sh run` from the desktop; recreating is required
+  because Docker cannot add mounts to an existing container.
+- `./run.sh gui-check` reports the OpenGL renderer inside the container — use it
+  to tell working GL from a silent software fallback.
 
-### Ports (loopback; increment with `sim_vehicle.py -I N`)
+No Gazebo packages were needed for this: `libgz-gui8` and
+`libgz-rendering8-ogre2` were already in the image via the `gz-harmonic`
+metapackage. The container could always render; it just had no screen to reach.
+
+**Why X auth is granted by user, not by cookie file.** GNOME/Wayland keeps the X
+cookie in a per-session randomly-named file (`/run/user/1000/.mutter-Xwaylandauth.XXXXXX`),
+too volatile to bind-mount. `xhost +SI:localuser:$(id -un)` is stable and
+narrower than the usual `xhost +local:`.
+
+**Why GPU access needs no group juggling.** logind puts an ACL on `/dev/dri/*`
+granting `user:rusik` — uid 1000. The container user is also uid 1000, so the
+ACL carries over. `run.sh` adds the `video`/`render` groups anyway as a fallback
+for when no seat ACL is present.
+
+**NVIDIA is not passed through, deliberately.** Mesa (already installed) drives
+the Intel iGPU with no extra setup. Using the NVIDIA card instead would require
+`nvidia-container-toolkit` on the host, because NVIDIA's userspace GL driver is
+a proprietary blob that must version-match the host kernel module exactly
+(580.173.02) and must therefore be injected at container start. That is a
+host-level change not worth making for one quadcopter in a runway world —
+revisit only if the Intel path is too slow. Software fallback below that is
+llvmpipe, which works and is slow.
+
+### Ports (loopback; increment with `sim_vehicle.py -I N`)### Ports (loopback; increment with `sim_vehicle.py -I N`)
 
 `9002/udp` SITL→Gazebo servos · `9003/udp` Gazebo→SITL state ·
 `5760/tcp` primary MAVLink · `5762`/`5763` extra · `9005/udp` IRLock.
@@ -237,6 +267,9 @@ comparison baseline for the commanded kill built in Phases 4–5.
 | Vendored `install-prereqs-ubuntu.sh` into `docker/` | Avoids a redundant multi-GB clone at image-build time; this router's DNS chokes on parallel submodule fetches |
 | No ROS / ROS 2 | The plugin talks to SITL directly over UDP; ROS only matters for ROS-side control |
 | ~~Headless by default (`gz sim -s`)~~ **Reversed 2026-08-25** | The assignment requires the drone visualised during the demo. Headless stays useful for iteration, but the deliverable needs rendering — see §4 |
+| Render on the Intel iGPU via Mesa; no NVIDIA passthrough | Works with zero host changes. NVIDIA would need `nvidia-container-toolkit` to inject version-matched driver blobs — not worth a host-level change unless Intel proves too slow (§4) |
+| GUI wiring is conditional on `DISPLAY`, not a separate compose file | One code path serves both headless iteration and on-screen demo; nothing to forget to switch |
+| `ffmpeg`/`mesa-utils` added as a late Dockerfile layer | Keeps the ~10-minute prereq layer cached; this router's apt DNS is flaky (§7) |
 | Keep Phase 3 (`SIM_ENGINE_FAIL` baseline) despite it not being in the assignment | Proves the sim stack independently, so a Phase 5 failure is attributable to the patch and not the environment |
 
 ---
@@ -278,8 +311,9 @@ Anticipated, not yet hit (Phases 4–5):
 1. **Phase 2** — bring up the full loop: `gz sim -v4 -r iris_runway.sdf` in one
    shell, `sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON` in another.
    Confirm `JSON control interface set to 127.0.0.1:9002`, EKF/GPS lock,
-   `mode STABILIZE`, and `arm throttle` spinning props. Settle the visualisation
-   path (§4) here, not at demo time.
+   `mode STABILIZE`, and `arm throttle` spinning props. Recreate the container
+   from a graphical session first (`./run.sh stop && ./run.sh run`), then confirm
+   with `./run.sh gui-check` that GL is hardware and not llvmpipe.
 2. **Phase 3** — `param set SIM_ENGINE_FAIL 2` + `param set SIM_ENGINE_MUL 0` in
    flight. Confirm the sim stack reacts. Baseline recorded.
 3. **Phase 4** — add the message to `ardupilotmega.xml` (ID 11061), rebuild
@@ -306,6 +340,7 @@ itself is not version-controlled here (§3).
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | Wired the GUI into `docker/run.sh` (X socket, `/dev/dri`, `DISPLAY`, `xhost` auth) and added `ffmpeg` + `mesa-utils` to the image. Corrected §4: this machine has a display and GPUs, so `xvfb`/`x11vnc` are unnecessary |
 | 2026-08-25 | Renamed `PROJECTS.md` → `PROJECT.md`; updated every reference in `CLAUDE.md`, `AGENTS.md`, `README.md` and `.gitignore` |
 | 2026-08-25 | Assignment received; rewrote §1 around it. Reversed two decisions: a new MAVLink message is now required (not a param), and visualisation is now required (not headless-only). Phases re-cut from 5 to 6 |
 | 2026-08-25 | Added `PROJECT.md` + `CLAUDE.md`; committed the `docker/` environment (Dockerfile, run.sh, first-run.sh, vendored prereq script) |
