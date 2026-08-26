@@ -20,7 +20,9 @@ set -euo pipefail
 REPO=/workspace/sitl_drone
 OUT_DIR="$REPO/recordings"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-OUT="$OUT_DIR/flight-$STAMP.mp4"
+FLIGHT="${FLIGHT:-fly_demo.py}"       # which script in scripts/ to fly
+TAG="${FLIGHT%.py}"
+OUT="$OUT_DIR/${TAG}-$STAMP.mp4"
 WORLD="${WORLD:-iris_runway.sdf}"
 MODEL="${MODEL:-iris_with_gimbal}"   # entity to keep in frame
 FPS="${FPS:-15}"
@@ -69,7 +71,9 @@ sleep 2
 log "starting Gazebo GUI ($WORLD)"
 # --gui-config: strip the docked panels and toolbars so the whole window is
 # render output, and start the camera high enough to see the aircraft.
-GUI_CFG="$REPO/docker/gz/gui-record.config"
+# gui-record.config = wide shot for the square demo.
+# gui-crash.config  = static side-on shot for the motor-failure run.
+GUI_CFG="${GUI_CFG:-$REPO/docker/gz/gui-record.config}"
 setsid gz sim -v2 -r --gui-config "$GUI_CFG" "$WORLD" >/tmp/gz_sim.log 2>&1 &
 
 # Wait for the render window to actually exist before trying to capture it.
@@ -134,8 +138,9 @@ sleep 2
 # ------------------------------------------------------------------- flight
 log "flying the demo"
 set +e
-bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && python3 $REPO/scripts/fly_demo.py"
-FLIGHT_RC=$?
+bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && python3 $REPO/scripts/$FLIGHT" \
+    2>&1 | tee /tmp/flight_out.txt
+FLIGHT_RC=${PIPESTATUS[0]}
 set -e
 
 sleep 3
@@ -148,6 +153,29 @@ if [[ "${VISIBLE:-0}" == "1" ]]; then
     log "flight finished (rc=$FLIGHT_RC), nothing recorded"
 elif [[ -s "$OUT" ]]; then
     log "saved: $OUT ($(du -h "$OUT" | cut -f1))"
+    # Gazebo is CPU-bound in DART at a 1 ms step and runs at RTF ~0.5, so the
+    # wall-clock capture plays at half speed. The flight script reports SITL's
+    # own clock -- which IS simulation time -- against wall time; re-time with
+    # that. Raising the step to 2 ms reaches RTF ~0.97 but breaks SITL's JSON
+    # link, so the correction is done in post (§10 Troubleshooting log).
+    HINT="$(grep -o 'RTF_HINT sim=[0-9.]* wall=[0-9.]*' /tmp/flight_out.txt | tail -1 || true)"
+    if [[ -n "$HINT" ]]; then
+        RTF="$(python3 -c "
+import re
+m = re.search(r'sim=([0-9.]+) wall=([0-9.]+)', '''$HINT''')
+s, w = float(m.group(1)), float(m.group(2))
+print(f'{max(0.05, min(1.0, s/w)):.4f}')")"
+        RT="${OUT%.mp4}-realtime.mp4"
+        log "measured RTF $RTF — writing real-time version"
+        if ffmpeg -hide_banner -loglevel error -y -i "$OUT" \
+                -filter:v "setpts=${RTF}*PTS" -an "$RT" 2>/dev/null; then
+            log "saved: $RT ($(du -h "$RT" | cut -f1))"
+        else
+            log "re-timing failed; the wall-clock capture is still valid"
+        fi
+    else
+        log "no RTF_HINT from the flight script; skipping real-time version"
+    fi
 else
     echo "recording is empty — check the capture geometry" >&2
     exit 1

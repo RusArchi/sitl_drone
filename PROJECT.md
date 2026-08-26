@@ -74,8 +74,8 @@ the trigger should be a `MAV_CMD`.
 |---|---|---|
 | 1 | Provision the build/sim environment | **Done** |
 | 2 | ArduCopter SITL flying an iris quad in Gazebo, with visualisation | **Done** 2026-08-26 |
-| 3 | Baseline: kill a rotor with `SIM_ENGINE_FAIL` (no code change) | **Not started** |
-| 4 | Define the new `MAV_CMD`; handle it in Copter; prove round-trip | **Not started** |
+| 3 | Baseline: kill a rotor with `SIM_ENGINE_FAIL` (no code change) | **Done** 2026-08-27 |
+| 4 | Define the new message in `ardupilotmega.xml`; rebuild ArduCopter **and** pymavlink; prove round-trip | **Not started** |
 | 5 | Handle it in Copter; propagate motor index down to the ESC output | **Not started** |
 | 6 | Send from MAVProxy in flight; record takeoff → command → crash | **Not started** |
 
@@ -85,6 +85,20 @@ patch exists, so a later failure can be attributed to the patch rather than the
 environment.
 
 ## 2. Current status
+
+**Phase 3 complete — a motor failure drops the aircraft, on video, with no code changes.**
+
+Verified 2026-08-27: `scripts/fly_fail.py` takes off to 20 m, cruises 40 m north
+in a straight line, then sets `SIM_ENGINE_FAIL=1` / `SIM_ENGINE_MUL=0` to kill
+motor 1 (front right). The aircraft departs immediately and hits the ground 5.7 s
+later, descent rate building to 18 m/s. Recorded to
+`recordings/fly_fail-*.mp4`; frame analysis confirms the aircraft tracking
+across the sky and then falling out of frame.
+
+This is the **baseline**: `SIM_ENGINE_FAIL` is applied in `SITL_State.cpp` before
+the physics backend, so it never passes through the mixer and the flight
+controller never knows. The Phase 4–6 commanded kill must produce a comparable
+departure while travelling the full path through `rc_write()`.
 
 **Phase 2 complete — the iris flies in Gazebo under scripted control.**
 
@@ -131,6 +145,8 @@ Next action is Phase 3 (§8 Next actions).
 | [CLAUDE.md](CLAUDE.md) | Rules for agents working in this repo |
 | [AGENTS.md](AGENTS.md) | Pointer to CLAUDE.md, for agents that look for this filename |
 | [docs/ENVIRONMENT_SETUP.md](docs/ENVIRONMENT_SETUP.md) | Full from-scratch provisioning reference (11 sections) |
+| [scripts/fly_fail.py](scripts/fly_fail.py) | Phase 3: straight-line cruise, then kill motor 1 via `SIM_ENGINE_FAIL`, log the fall |
+| [docker/gz/gui-crash.config](docker/gz/gui-crash.config) | Static side-on Gazebo camera for the failure run |
 | [scripts/record_demo.sh](scripts/record_demo.sh) | Bring up Gazebo + SITL on a private Xvfb display, record the flight to `recordings/*.mp4` |
 | [docker/gz/gui-record.config](docker/gz/gui-record.config) | Minimal Gazebo GUI for recording — 3D view only, no docked panels |
 | [scripts/setup_env.sh](scripts/setup_env.sh) | Host provisioner; `--check` verifies without changing anything |
@@ -276,7 +292,14 @@ thrust) once the three-motor recovery work starts. `MAV_CMD_USER_1..5`
 experiment and need **no XML edit at all** — worth using for the first
 round-trip test before committing to a named command.
 
-**New message vs. new `MAV_CMD` — use `MAV_CMD`.** Decided 2026-08-25 (§6 Decisions).
+**New message vs. new `MAV_CMD` — use a NEW MESSAGE.** Decided 2026-08-27,
+reversing the 2026-08-25 choice of `MAV_CMD`. The assignment says "create a new
+MAVLink message", and Ruslan confirmed that is the requirement. A `MAV_CMD` is
+*not* a new message — it is a new numbered value carried inside the existing
+`COMMAND_LONG`. The engineering argument for `MAV_CMD` is recorded below and
+still stands on its merits, but the requirement decides it.
+
+**Superseded reasoning, kept because the trade-off is real:**
 Both traverse the same plumbing the assignment is about; a `MAV_CMD` adds an
 enum value to `ardupilotmega.xml` and a `case` in the Copter command handler,
 carries up to 7 float params, and gets acknowledgement and retry for free via
@@ -333,6 +356,7 @@ comparison baseline for the commanded kill built in Phases 4–5.
 | Gazebo **Harmonic** (`libgz-sim8-dev`), not Garden or gazebo-classic | What the plugin README recommends; classic is EOL and its packages conflict with `gz-harmonic` |
 | Kill at `rc_write()`, not in `output_armed_stabilizing()` | Downstream of the stability patch, so the mixer can't compensate the zero away |
 | ~~`MOT_KILL_MASK` bitmask param, not a new MAVLink message~~ **Reversed 2026-08-25** | The assignment requires a new MAVLink message carrying a motor index 1–4. The protocol work *is* the exercise, not overhead to be avoided |
+| ~~Use a `MAV_CMD` rather than a new message id~~ **Reversed 2026-08-27** | Chosen for the free `COMMAND_ACK` and zero pymavlink rebuild. But a `MAV_CMD` is a value inside `COMMAND_LONG`, not a new message, and the assignment asks for a new message. Requirement beats convenience. Cost: pymavlink **must** be regenerated, since a new message id changes the wire format and CRC-extra |
 | Kill one motor by index (1–4), not a bitmask | Matches the assignment's payload. A bitmask is a superset and can come later if useful |
 | Keep `rc_write()` as the injection point | Unchanged by the reversal above — only the *trigger* changed, not where the zero is applied |
 | ArduPilot + plugin as **bind-mounted host clones**, not baked into the image | Sources, venv and build artifacts persist and stay usable by host-side tooling |
@@ -400,6 +424,17 @@ Do not rediscover these.
 - **Gazebo's `/gui/screenshot` service returns `data: true` and writes nothing.**
   Do not trust the boolean; check for the file.
 
+- **SITL parameters persist in `eeprom.bin` across restarts.** An injected
+  `SIM_ENGINE_FAIL` from a previous run is still armed on the next boot, and the
+  aircraft simply refuses to take off with no obvious explanation. Flight scripts
+  must clear it before flying — `fly_fail.py` does.
+- **`/gui/follow` holds a BODY-frame offset.** The moment the aircraft tumbles
+  the camera whips around with it and the vehicle leaves frame entirely. Fine for
+  level flight, useless for a crash — use a static camera pose there
+  (`docker/gz/gui-crash.config`).
+- **`time_boot_ms` counts from SITL boot, not from script start.** Using it
+  directly to measure elapsed sim time overstates it badly; take a delta.
+
 Anticipated, not yet hit (Phases 4–5):
 
 - **pymavlink will not know the new message.** The venv's pymavlink comes from
@@ -433,7 +468,7 @@ itself is not version-controlled here (§3 Repo layout).
 
 - Does the supervisor accept a `MAV_CMD` as "a new MAVLink message"? Decided to
   use one (§5 Technical ground truth); worth confirming, it is the only interpretive risk in the task.
-- Why is Gazebo's RTF only 0.47 on an idle 8-core box? (§4 Environment)
+- ~~Why is Gazebo's RTF only 0.47?~~ **Answered 2026-08-27** — CPU-bound in DART at the world's 1 ms step (`gz sim` sits at ~240% CPU). The world already asks for `real_time_factor 1.0`, so nothing is throttling it. A 2 ms step reaches RTF ~0.97 but **breaks SITL's JSON link** — arming never completes — so the step stays at 1 ms and the video is re-timed in post instead.
 - Is a live GUI required for the demo, or is a recording acceptable? (§4 Environment)
 
 ---
@@ -442,6 +477,7 @@ itself is not version-controlled here (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | Phase 3 done: `fly_fail.py` kills motor 1 in flight via `SIM_ENGINE_FAIL`, recorded. Reversed the `MAV_CMD` decision — the assignment requires a genuinely new message. Answered the RTF question and added post-hoc re-timing |
 | 2026-08-27 | Added `scripts/record_demo.sh` + a minimal Gazebo GUI config; the Phase 2 flight is now recorded to `recordings/*.mp4`. Added `xvfb`, `xdotool`, `x11-utils` to the image |
 | 2026-08-26 | **Phase 2 done** — `scripts/fly_demo.py` flies the iris in Gazebo end to end (arm, takeoff, square, land). Added §10 troubleshooting log |
 | 2026-08-25 | `run.sh` now finds the desktop's X display over ssh, so GUI setup needs no physical session. Corrected §4 Environment: display is NVIDIA-driven and rendering is software, but measured RTF is identical with and without the GUI, so no passthrough. Resolved motor numbering from source (§5 Technical ground truth); chose `MAV_CMD` over a new message ID (§6 Decisions); recorded the learning goal (§1 Mission) |
@@ -574,3 +610,30 @@ is append-only** — unlike the rest of the file, history here *is* the value.
   A 21 MB mp4 and a 2 MB mp4 both look like success from the shell; only pulling
   a frame out and looking at it showed the difference. Extract and inspect one
   frame before declaring a recording done.
+
+### 2026-08-27 — the drone would not take off, and nothing said why
+
+- **Believed:** the Phase 3 script had a bug in its takeoff logic. It reached
+  `arming...`, armed successfully, commanded takeoff to 20 m and then simply
+  timed out — and the same script had reached 40 m minutes earlier.
+- **Actually:** SITL stores parameters in `eeprom.bin` and **keeps them across
+  restarts**. The previous run had set `SIM_ENGINE_FAIL=1`, so motor 1 was still
+  dead when the next run started. The aircraft was trying to take off on three
+  motors from the ground. Nothing in the MAVLink stream said so, because from
+  the flight controller's point of view nothing was wrong.
+- **Lesson:** a simulator with persistent state is not a fresh simulator. When a
+  run mutates configuration, the next run inherits it — reset injected faults at
+  the start of every script rather than assuming a clean boot.
+
+### 2026-08-27 — chose engineering convenience over the stated requirement
+
+- **Believed:** a `MAV_CMD` was the better route than a new message id — it gets
+  `COMMAND_ACK` for free, carries 7 params, and needs no pymavlink rebuild. It
+  was recorded as a decision in §6 Decisions with that reasoning.
+- **Actually:** the assignment says "create a new MAVLink message". A `MAV_CMD`
+  is a numbered value inside the existing `COMMAND_LONG` — it is not a new
+  message, and the plumbing it skips is exactly the plumbing the exercise is
+  about. Ruslan had to say so directly before it was reversed.
+- **Lesson:** when a requirement is explicit, a cheaper alternative is a
+  suggestion, not a decision. Surface the trade-off and let the person holding
+  the requirement choose; do not record the convenient option as settled.
