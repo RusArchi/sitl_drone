@@ -75,7 +75,7 @@ the trigger should be a `MAV_CMD`.
 | 1 | Provision the build/sim environment | **Done** |
 | 2 | ArduCopter SITL flying an iris quad in Gazebo, with visualisation | **Done** 2026-08-26 |
 | 3 | Baseline: kill a rotor with `SIM_ENGINE_FAIL` (no code change) | **Not started** |
-| 4 | Define the new MAVLink message; regenerate C headers + pymavlink | **Not started** |
+| 4 | Define the new `MAV_CMD`; handle it in Copter; prove round-trip | **Not started** |
 | 5 | Handle it in Copter; propagate motor index down to the ESC output | **Not started** |
 | 6 | Send from MAVProxy in flight; record takeoff → command → crash | **Not started** |
 
@@ -252,10 +252,10 @@ The signal path the assignment asks for, end to end:
 
 | # | Link in the chain | Where |
 |---|---|---|
-| 1 | New message definition | `modules/mavlink/message_definitions/v1.0/ardupilotmega.xml` |
+| 1 | New `MAV_CMD` enum value | `modules/mavlink/message_definitions/v1.0/ardupilotmega.xml`, in the `MAV_CMD` enum |
 | 2 | C headers | regenerated automatically by waf's `mavgen` task (`Tools/ardupilotwaf/mavgen.py`) — editing the XML and rebuilding is enough |
-| 3 | Python encoder for MAVProxy | **not** automatic — see the pymavlink gotcha in §7 Gotchas |
-| 4 | Copter receives it | `ArduCopter/GCS_MAVLink_Copter.cpp:1179` `GCS_MAVLINK_Copter::handle_message()` — already a switch that falls through to `GCS_MAVLINK::handle_message()` |
+| 3 | Python side (MAVProxy / script) | **no rebuild needed** — `COMMAND_LONG` already exists, so stock pymavlink can send the new id as a number. Regenerate only to get the *name* |
+| 4 | Copter receives it | `ArduCopter/GCS_MAVLink_Copter.cpp:470` `handle_command_int_packet()` — add a `case`, exactly as `MAV_CMD_DO_MOTOR_TEST` does at line 487 |
 | 5 | Stored state | new setter on `AP_MotorsMatrix` / `AP_MotorsMulticopter` |
 | 6 | **Applied to ESC output** | `AP_Motors/AP_MotorsMatrix.cpp:180`, the `rc_write()` call inside `output_to_motors()` |
 | 7 | SITL: PWM → physics | `AP_HAL_SITL/SITL_State.cpp:287` `_simulator_servos()` (no change needed) |
@@ -266,10 +266,13 @@ genuine final ESC command that the stability patch cannot rescale. This is the
 "command to the ESC drivers" the assignment names, and it is identical on real
 hardware — which is the point.
 
-**Message definition (step 1).** ArduPilot's dialect currently uses IDs up to
-`11060`; the ArduPilot-reserved range runs to 11999, so the next free ID is
-**11061**. Payload: one `uint8_t` motor index, 1–4. Worth adding a target
-system/component field to match MAVLink convention.
+**Command definition (step 1).** Add an entry to the `MAV_CMD` enum in
+`ardupilotmega.xml`. `param1` = motor number 1–4 (output-channel convention,
+see below); leave `param2` free for a later failure *mode* (hard stop, partial
+thrust) once the three-motor recovery work starts. `MAV_CMD_USER_1..5`
+(31010–31014, already in `common.xml`) are reserved for exactly this kind of
+experiment and need **no XML edit at all** — worth using for the first
+round-trip test before committing to a named command.
 
 **New message vs. new `MAV_CMD` — use `MAV_CMD`.** Decided 2026-08-25 (§6 Decisions).
 Both traverse the same plumbing the assignment is about; a `MAV_CMD` adds an
@@ -277,7 +280,15 @@ enum value to `ardupilotmega.xml` and a `case` in the Copter command handler,
 carries up to 7 float params, and gets acknowledgement and retry for free via
 `COMMAND_ACK`. A brand-new message ID means hand-rolling all of that. For the
 three-motor-recovery goal the ack matters: a safety command must be *known* to
-have arrived. Both still require rebuilding ArduCopter **and** pymavlink.
+have arrived.
+
+**Rebuild cost differs, and this is the deciding practical point.** A new
+*message* changes the wire format — new msgid and CRC-extra — so pymavlink
+**must** be regenerated or the message is silently dropped. A new `MAV_CMD` is
+just a number inside the existing `COMMAND_LONG`/`COMMAND_INT` payload, so the
+format is unchanged and **stock pymavlink can send it today**; regenerating only
+buys the human-readable name. Either way ArduCopter itself must be rebuilt.
+Verified 2026-08-26.
 
 **Motor numbering — resolved 2026-08-25** against `AP_MotorsMatrix.cpp:592`
 (`MOTOR_FRAME_TYPE_X`). `add_motors()` assigns `motor_num` from the array index,
@@ -296,10 +307,10 @@ left; test order 2 is back right. Use the **output-channel** convention (1–4 �
 index 0–3), which is what users see in `RCOU` logs and in `MOT_` parameters, and
 say so in the message's field documentation.
 
-**Sending from MAVProxy (step 3).** A custom message needs a way to be typed at
-the MAVProxy prompt. Cleanest is a small MAVProxy module registering a
-`motorfail <1-4>` command. It must run against a pymavlink built from the *same*
-modified XML.
+**Sending from MAVProxy (step 3).** MAVProxy's built-in `long` command sends an
+arbitrary `COMMAND_LONG`, so `long <cmd-id> <motor>` works with **no custom
+module and no pymavlink rebuild**. A small MAVProxy module registering
+`motorfail <1-4>` is nicer to demo but is sugar, not a requirement.
 
 ### Baseline that needs no code (Phase 3)
 
