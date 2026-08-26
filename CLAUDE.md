@@ -18,8 +18,8 @@ finished until the file reflects it.
 
 | Trigger | What to update |
 |---|---|
-| Complete or advance a phase | §1 phase table, §2 status, §8 next actions |
-| Verify something works (or find it broken) | §2 status — say what was verified and when |
+| Complete or advance a phase | §1 Mission phase table, §2 Current status, §8 next actions |
+| Verify something works (or find it broken) | §2 Current status — say what was verified and when |
 | Make a design or tooling choice with an alternative | §6 decisions — one row, with the *why* |
 | Hit a non-obvious failure and solve it | §7 gotchas — so nobody pays for it twice |
 | **Get something wrong** — a false diagnosis, a broken change, a claim that did not hold | §10 troubleshooting log — see below. Not optional |
@@ -29,7 +29,7 @@ finished until the file reflects it.
 
 Also bump **Last updated** at the top, and the **Branch** line if it changed.
 
-## Record your own mistakes — §10, every time
+## Record your own mistakes — §10 Troubleshooting log, every time
 
 When you get something wrong, write it into **§10 Troubleshooting log** as part
 of the same change that fixes it. This is not a courtesy; a wrong diagnosis that
@@ -58,7 +58,7 @@ Add **Cost:** when the mistake cost real time or destroyed a working state.
 
 **Rules.**
 
-- **§10 is append-only.** Everywhere else in this file, correct stale lines. Here,
+- **§10 Troubleshooting log is append-only.** Everywhere else in this file, correct stale lines. Here,
   the history is the point — never edit or delete an old entry.
 - **Write it plainly.** No hedging, no blaming the tool when the tool behaved as
   documented and you misread it.
@@ -67,8 +67,8 @@ Add **Cost:** when the mistake cost real time or destroyed a working state.
   engineer, not an apology.
 
 If a mistake also leaves a reusable trap for anyone (not just a lesson about how
-you worked), put the trap in §7 gotchas *as well* — §10 explains what went wrong,
-§7 tells the next person how to avoid it.
+you worked), put the trap in §7 gotchas *as well* — §10 Troubleshooting log explains what went wrong,
+§7 Gotchas tells the next person how to avoid it.
 
 ## How to write in it
 
@@ -79,9 +79,13 @@ you worked), put the trap in §7 gotchas *as well* — §10 explains what went w
 - **Correct, don't append.** When reality changes, edit the stale line. This file is
   a current-state document with a changelog at the end, not an append-only log.
 - **Prune.** If a section stops being true or useful, delete it. Length is not value.
-  Exception: §10 is append-only.
+  Exception: §10 Troubleshooting log is append-only.
 - **Keep it self-contained.** Someone with no session history should be able to pick
   up the work from this file alone.
+- **Always name a section, never just number it.** Write "§7 Gotchas", not "§7" —
+  in this file, in commit messages, and when talking to the user. A bare number
+  asks the reader to hold a table of contents in their head. This applies to any
+  numbered reference: phases, decision rows, steps.
 
 ## Precedence
 
@@ -100,7 +104,7 @@ Don't duplicate the setup guide into `PROJECT.md`; link to it.
 ## Working style on ArduPilot changes
 
 Learning ArduCopter's structure is an explicit goal of this project (PROJECT.md
-§1) — the end goal is a safety function that keeps the aircraft controllable on
+§1 Mission) — the end goal is a safety function that keeps the aircraft controllable on
 three motors. So, for anything touching ArduPilot:
 
 - **Explain before changing.** What the code does now, where the change goes,
@@ -118,9 +122,9 @@ fast there.
   `~/ardupilot_gazebo`, bind-mounted into the container. They are not part of this
   repo. Mixer patches land there; track the diff and the findings here.
 - Anything running `sim_vehicle.py` or a pymavlink script must first
-  `source ~/ardupilot/venv-ardupilot/bin/activate` (PEP 668 — see PROJECT.md §4).
+  `source ~/ardupilot/venv-ardupilot/bin/activate` (PEP 668 — see PROJECT.md §4 Environment).
 - The container is **disposable**: `/home/rusik` is not bind-mounted, so anything
   written to `~/.bashrc` inside it is lost on recreate. Persistent env belongs in
   the Dockerfile as `ENV` (that is where the GZ vars now live).
-- ArduPilot line references in `PROJECT.md` §5 are pinned to master `cbe0c39`.
+- ArduPilot line references in `PROJECT.md` §5 Technical ground truth are pinned to master `cbe0c39`.
   Re-verify before relying on them, and update the pin when you do.

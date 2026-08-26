@@ -13,7 +13,7 @@ The short version, in case you read nothing else:
 2. **Keep it current in the same change, not later.** A change is not finished
    until `PROJECT.md` reflects it. CLAUDE.md has the trigger table for what to
    update when.
-3. **Record your own mistakes** in PROJECT.md §10, in the same change that fixes
+3. **Record your own mistakes** in PROJECT.md §10 Troubleshooting log, in the same change that fixes
    them — false diagnoses, broken changes, claims that did not hold. That section
    is append-only.
 4. **Precedence: code > `PROJECT.md` > everything else.** If the code contradicts

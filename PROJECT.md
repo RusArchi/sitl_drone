@@ -46,9 +46,9 @@ same physical outcome without traversing that chain misses the point of the task
 Two consequences worth stating up front, because both reverse earlier assumptions:
 
 - A **new MAVLink message is required.** Setting an existing parameter is
-  explicitly not the exercise (see §6).
+  explicitly not the exercise (see §6 Decisions).
 - **Visualisation is required.** Headless-only is no longer sufficient for the
-  deliverable (see §4).
+  deliverable (see §4 Environment).
 
 ### How this work is done — learning is a goal, not a by-product
 
@@ -65,7 +65,7 @@ That changes the working style. For anything touching ArduPilot:
 - **Favour understanding over shortcuts** when the two conflict. A slower route
   that shows the control path is worth more here than a clever one that hides it.
 
-The three-motor recovery goal also informs design choices *now* — see §5 on why
+The three-motor recovery goal also informs design choices *now* — see §5 Technical ground truth on why
 the trigger should be a `MAV_CMD`.
 
 ### Phases
@@ -104,7 +104,7 @@ Environment (verified 2026-08-25, unchanged):
   `ENV`, so they survive container recreation and reach non-interactive
   `docker exec`.
 - GUI wiring is live: `run.sh` finds the desktop's X display even over ssh.
-  Rendering is software (llvmpipe) and that is fine — see §4.
+  Rendering is software (llvmpipe) and that is fine — see §4 Environment.
 
 ### How to bring the sim up
 
@@ -118,7 +118,7 @@ docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate 
     python3 /workspace/sitl_drone/scripts/fly_demo.py'
 ```
 
-Next action is Phase 3 (§8).
+Next action is Phase 3 (§8 Next actions).
 
 ---
 
@@ -136,7 +136,7 @@ Next action is Phase 3 (§8).
 | [docker/Dockerfile](docker/Dockerfile) | Reproducible Ubuntu 24.04 build/sim image |
 | [docker/run.sh](docker/run.sh) | `build` / `run` / `shell` / `check` / `gui-check` / `stop` wrapper; wires the GUI in when `DISPLAY` is set |
 | [docker/first-run.sh](docker/first-run.sh) | One-time in-container provisioning against the bind-mounted clones (idempotent) |
-| [docker/install-prereqs-ubuntu.sh](docker/install-prereqs-ubuntu.sh) | Vendored copy of ArduPilot's official prereq script (see §6) |
+| [docker/install-prereqs-ubuntu.sh](docker/install-prereqs-ubuntu.sh) | Vendored copy of ArduPilot's official prereq script (see §6 Decisions) |
 | `docker/Tools/completion/completion.bash` | Vendored; the prereq script above requires it to exist |
 
 **Not in this repo:** the ArduPilot source itself and the `ardupilot_gazebo`
@@ -162,7 +162,7 @@ host, so build artifacts written through the bind mounts stay usable host-side.
 ### Visualisation
 
 This machine is **not** a headless server — an earlier assumption in
-`docs/ENVIRONMENT_SETUP.md` §6 that turned out to be wrong. Verified 2026-08-25:
+`docs/ENVIRONMENT_SETUP.md` §6 (Headless operation) that turned out to be wrong. Verified 2026-08-25:
 GNOME/Wayland session running, X sockets `:0` and `:1` present, Intel HD 630
 (`00:02.0`) + NVIDIA GTX 1050 Ti (`01:00.0`, driver 580.173.02), `/dev/dri`
 render nodes available. So `xvfb`/`x11vnc` are **not needed**; render for real.
@@ -254,7 +254,7 @@ The signal path the assignment asks for, end to end:
 |---|---|---|
 | 1 | New message definition | `modules/mavlink/message_definitions/v1.0/ardupilotmega.xml` |
 | 2 | C headers | regenerated automatically by waf's `mavgen` task (`Tools/ardupilotwaf/mavgen.py`) — editing the XML and rebuilding is enough |
-| 3 | Python encoder for MAVProxy | **not** automatic — see the pymavlink gotcha in §7 |
+| 3 | Python encoder for MAVProxy | **not** automatic — see the pymavlink gotcha in §7 Gotchas |
 | 4 | Copter receives it | `ArduCopter/GCS_MAVLink_Copter.cpp:1179` `GCS_MAVLINK_Copter::handle_message()` — already a switch that falls through to `GCS_MAVLINK::handle_message()` |
 | 5 | Stored state | new setter on `AP_MotorsMatrix` / `AP_MotorsMulticopter` |
 | 6 | **Applied to ESC output** | `AP_Motors/AP_MotorsMatrix.cpp:180`, the `rc_write()` call inside `output_to_motors()` |
@@ -271,7 +271,7 @@ hardware — which is the point.
 **11061**. Payload: one `uint8_t` motor index, 1–4. Worth adding a target
 system/component field to match MAVLink convention.
 
-**New message vs. new `MAV_CMD` — use `MAV_CMD`.** Decided 2026-08-25 (§6).
+**New message vs. new `MAV_CMD` — use `MAV_CMD`.** Decided 2026-08-25 (§6 Decisions).
 Both traverse the same plumbing the assignment is about; a `MAV_CMD` adds an
 enum value to `ardupilotmega.xml` and a `case` in the Copter command handler,
 carries up to 7 float params, and gets acknowledgement and retry for free via
@@ -325,13 +325,13 @@ comparison baseline for the commanded kill built in Phases 4–5.
 | ArduPilot + plugin as **bind-mounted host clones**, not baked into the image | Sources, venv and build artifacts persist and stay usable by host-side tooling |
 | Vendored `install-prereqs-ubuntu.sh` into `docker/` | Avoids a redundant multi-GB clone at image-build time; this router's DNS chokes on parallel submodule fetches |
 | No ROS / ROS 2 | The plugin talks to SITL directly over UDP; ROS only matters for ROS-side control |
-| ~~Headless by default (`gz sim -s`)~~ **Reversed 2026-08-25** | The assignment requires the drone visualised during the demo. Headless stays useful for iteration, but the deliverable needs rendering — see §4 |
-| Accept software rendering (llvmpipe); no NVIDIA passthrough | Measured: RTF is 0.47 with *and* without the GUI, so rendering is not the bottleneck and passthrough would gain nothing (§4). Supersedes an earlier row claiming the Intel iGPU would serve — wrong, the display is NVIDIA-driven |
-| Trigger is a new **`MAV_CMD`**, not a new message ID | Same plumbing, but gets `COMMAND_ACK` retry/acknowledgement for free and carries 7 float params. For a safety command that must be known to have arrived, the ack is the deciding factor (§5) |
-| Motor index uses the **output-channel** convention (1–4 → index 0–3) | What users see in `RCOU` logs and `MOT_` params. Motor-test order is a different mapping and agrees only for motor 1 (§5) |
-| Explain-first working style on ArduPilot changes | Learning the ArduCopter structure is an explicit project goal, not a by-product (§1) |
+| ~~Headless by default (`gz sim -s`)~~ **Reversed 2026-08-25** | The assignment requires the drone visualised during the demo. Headless stays useful for iteration, but the deliverable needs rendering — see §4 Environment |
+| Accept software rendering (llvmpipe); no NVIDIA passthrough | Measured: RTF is 0.47 with *and* without the GUI, so rendering is not the bottleneck and passthrough would gain nothing (§4 Environment). Supersedes an earlier row claiming the Intel iGPU would serve — wrong, the display is NVIDIA-driven |
+| Trigger is a new **`MAV_CMD`**, not a new message ID | Same plumbing, but gets `COMMAND_ACK` retry/acknowledgement for free and carries 7 float params. For a safety command that must be known to have arrived, the ack is the deciding factor (§5 Technical ground truth) |
+| Motor index uses the **output-channel** convention (1–4 → index 0–3) | What users see in `RCOU` logs and `MOT_` params. Motor-test order is a different mapping and agrees only for motor 1 (§5 Technical ground truth) |
+| Explain-first working style on ArduPilot changes | Learning the ArduCopter structure is an explicit project goal, not a by-product (§1 Mission) |
 | GUI wiring is conditional on `DISPLAY`, not a separate compose file | One code path serves both headless iteration and on-screen demo; nothing to forget to switch |
-| `ffmpeg`/`mesa-utils` added as a late Dockerfile layer | Keeps the ~10-minute prereq layer cached; this router's apt DNS is flaky (§7) |
+| `ffmpeg`/`mesa-utils` added as a late Dockerfile layer | Keeps the ~10-minute prereq layer cached; this router's apt DNS is flaky (§7 Gotchas) |
 | Keep Phase 3 (`SIM_ENGINE_FAIL` baseline) despite it not being in the assignment | Proves the sim stack independently, so a Phase 5 failure is attributable to the patch and not the environment |
 
 ---
@@ -390,26 +390,26 @@ Anticipated, not yet hit (Phases 4–5):
 
 ## 8. Next actions
 
-1. ~~**Phase 2**~~ — done 2026-08-26, see §2.
+1. ~~**Phase 2**~~ — done 2026-08-26, see §2 Current status.
 2. **Phase 3** — `param set SIM_ENGINE_FAIL 2` + `param set SIM_ENGINE_MUL 0` in
    flight. Confirm the sim stack reacts. Baseline recorded.
 3. **Phase 4** — add the message to `ardupilotmega.xml` (ID 11061), rebuild
-   ArduCopter, **and** reinstall pymavlink from the submodule (§7). Prove
+   ArduCopter, **and** reinstall pymavlink from the submodule (§7 Gotchas). Prove
    round-trip: MAVProxy sends, SITL logs receipt. No motor behaviour yet.
-4. **Phase 5** — resolve the motor-numbering question (§5), add the setter and the
+4. **Phase 5** — resolve the motor-numbering question (§5 Technical ground truth), add the setter and the
    `rc_write()` check, rebuild. Verify motor N and only motor N goes to zero.
 5. **Phase 6** — fly, send `motorfail 3` in Stabilize, record takeoff → command →
    crash. Log `RATE`, `ATT`, `MOTB`, `RCOU`; keep the video and the `.bin`.
 
 Keep the ArduPilot changes as a tracked patch in this repo — the ArduPilot tree
-itself is not version-controlled here (§3).
+itself is not version-controlled here (§3 Repo layout).
 
 ### Open questions
 
 - Does the supervisor accept a `MAV_CMD` as "a new MAVLink message"? Decided to
-  use one (§5); worth confirming, it is the only interpretive risk in the task.
-- Why is Gazebo's RTF only 0.47 on an idle 8-core box? (§4)
-- Is a live GUI required for the demo, or is a recording acceptable? (§4)
+  use one (§5 Technical ground truth); worth confirming, it is the only interpretive risk in the task.
+- Why is Gazebo's RTF only 0.47 on an idle 8-core box? (§4 Environment)
+- Is a live GUI required for the demo, or is a recording acceptable? (§4 Environment)
 
 ---
 
@@ -418,11 +418,11 @@ itself is not version-controlled here (§3).
 | Date | Change |
 |---|---|
 | 2026-08-26 | **Phase 2 done** — `scripts/fly_demo.py` flies the iris in Gazebo end to end (arm, takeoff, square, land). Added §10 troubleshooting log |
-| 2026-08-25 | `run.sh` now finds the desktop's X display over ssh, so GUI setup needs no physical session. Corrected §4: display is NVIDIA-driven and rendering is software, but measured RTF is identical with and without the GUI, so no passthrough. Resolved motor numbering from source (§5); chose `MAV_CMD` over a new message ID (§6); recorded the learning goal (§1) |
+| 2026-08-25 | `run.sh` now finds the desktop's X display over ssh, so GUI setup needs no physical session. Corrected §4 Environment: display is NVIDIA-driven and rendering is software, but measured RTF is identical with and without the GUI, so no passthrough. Resolved motor numbering from source (§5 Technical ground truth); chose `MAV_CMD` over a new message ID (§6 Decisions); recorded the learning goal (§1 Mission) |
 | 2026-08-25 | Fixed `run.sh` GUI path (unbound `DISPLAY` when headless); moved GZ env vars into the image so they survive container recreation and reach non-interactive `docker exec`; made `-it` conditional |
-| 2026-08-25 | Wired the GUI into `docker/run.sh` (X socket, `/dev/dri`, `DISPLAY`, `xhost` auth) and added `ffmpeg` + `mesa-utils` to the image. Corrected §4: this machine has a display and GPUs, so `xvfb`/`x11vnc` are unnecessary |
+| 2026-08-25 | Wired the GUI into `docker/run.sh` (X socket, `/dev/dri`, `DISPLAY`, `xhost` auth) and added `ffmpeg` + `mesa-utils` to the image. Corrected §4 Environment: this machine has a display and GPUs, so `xvfb`/`x11vnc` are unnecessary |
 | 2026-08-25 | Renamed `PROJECTS.md` → `PROJECT.md`; updated every reference in `CLAUDE.md`, `AGENTS.md`, `README.md` and `.gitignore` |
-| 2026-08-25 | Assignment received; rewrote §1 around it. Reversed two decisions: a new MAVLink message is now required (not a param), and visualisation is now required (not headless-only). Phases re-cut from 5 to 6 |
+| 2026-08-25 | Assignment received; rewrote §1 Mission around it. Reversed two decisions: a new MAVLink message is now required (not a param), and visualisation is now required (not headless-only). Phases re-cut from 5 to 6 |
 | 2026-08-25 | Added `PROJECT.md` + `CLAUDE.md`; committed the `docker/` environment (Dockerfile, run.sh, first-run.sh, vendored prereq script) |
 | 2026-08-25 | Environment verified end-to-end in the container; image rebuilt with `cppzmq-dev` baked in |
 | 2026-08-25 | Initial commit: `docs/ENVIRONMENT_SETUP.md`, `scripts/setup_env.sh`, README with the mixer map |
@@ -513,6 +513,6 @@ is append-only** — unlike the rest of the file, history here *is* the value.
 
 - **Believed:** documenting the GPU findings could follow the code commit.
 - **Actually:** CLAUDE.md requires the update in the same change, and the user had
-  to ask. §4 and §6 sat wrong in the meantime, which is worse than absent.
+  to ask. §4 Environment and §6 Decisions sat wrong in the meantime, which is worse than absent.
 - **Lesson:** the rule exists because stale ground truth actively misleads. Apply
   it to one's own findings, not just to code changes.
