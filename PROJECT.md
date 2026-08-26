@@ -50,6 +50,24 @@ Two consequences worth stating up front, because both reverse earlier assumption
 - **Visualisation is required.** Headless-only is no longer sufficient for the
   deliverable (see §4).
 
+### How this work is done — learning is a goal, not a by-product
+
+Ruslan's aim is to **understand ArduCopter's structure**, not just to produce a
+working demo. The motor-kill exercise is a stepping stone toward a novel safety
+function: **keeping the aircraft controllable on three motors after one fails.**
+
+That changes the working style. For anything touching ArduPilot:
+
+- **Explain before changing.** Say what the code does today, where the change
+  goes, and why there rather than elsewhere.
+- **Prefer steps Ruslan can do by hand.** Small, inspectable edits over
+  scripted bulk changes; name the file and the function, don't just patch.
+- **Favour understanding over shortcuts** when the two conflict. A slower route
+  that shows the control path is worth more here than a clever one that hides it.
+
+The three-motor recovery goal also informs design choices *now* — see §5 on why
+the trigger should be a `MAV_CMD`.
+
 ### Phases
 
 | # | Phase | State |
@@ -161,14 +179,28 @@ granting `user:rusik` — uid 1000. The container user is also uid 1000, so the
 ACL carries over. `run.sh` adds the `video`/`render` groups anyway as a fallback
 for when no seat ACL is present.
 
-**NVIDIA is not passed through, deliberately.** Mesa (already installed) drives
-the Intel iGPU with no extra setup. Using the NVIDIA card instead would require
-`nvidia-container-toolkit` on the host, because NVIDIA's userspace GL driver is
-a proprietary blob that must version-match the host kernel module exactly
-(580.173.02) and must therefore be injected at container start. That is a
-host-level change not worth making for one quadcopter in a runway world —
-revisit only if the Intel path is too slow. Software fallback below that is
-llvmpipe, which works and is slow.
+**Rendering is software (llvmpipe), and that is fine — measured, not assumed.**
+The monitors hang off the NVIDIA card (`10de:1c82`), so X hands the container an
+NVIDIA DRM device; Mesa has no driver for it (`failed to load driver: nvidia-drm`,
+`glx: failed to create dri3 screen`) and falls back to the llvmpipe software
+rasteriser. Making that hardware-accelerated would need `nvidia-container-toolkit`
+on the host to inject version-matched driver blobs (580.173.02).
+
+**Not worth doing.** Measured 2026-08-25 on `iris_runway.sdf`:
+
+| Config | Real-time factor |
+|---|---|
+| `gz sim` with GUI (llvmpipe) | 0.47 |
+| `gz sim -s` headless, same world | 0.47–0.50 |
+
+Identical — so rendering costs nothing measurable and the bottleneck is physics.
+NVIDIA passthrough would buy nothing. (An earlier claim that the *Intel* iGPU
+would serve was wrong for the same reason: the display is NVIDIA-driven.)
+
+**Open: why is RTF only 0.47?** Half real time on an idle 8-core box. Not
+blocking — Gazebo and SITL stay in lockstep, so the physics remain valid, demos
+just take 2× wall clock. Suspects: the 1 ms physics step, or a
+`real_time_update_rate` cap in the world file.
 
 ### Ports (loopback; increment with `sim_vehicle.py -I N`)### Ports (loopback; increment with `sim_vehicle.py -I N`)
 
@@ -226,17 +258,30 @@ hardware — which is the point.
 **11061**. Payload: one `uint8_t` motor index, 1–4. Worth adding a target
 system/component field to match MAVLink convention.
 
-**Open question — literal new message vs. a new `MAV_CMD`.** The assignment says
-"a new MAVLink message", which reads literally as a new message ID. The cheaper
-route is a new `MAV_CMD` enum value carried inside the existing `COMMAND_LONG`.
-Plan for the literal reading: it is the more instructive plumbing exercise and
-unambiguously satisfies the ask. Confirm with the supervisor if time is tight.
+**New message vs. new `MAV_CMD` — use `MAV_CMD`.** Decided 2026-08-25 (§6).
+Both traverse the same plumbing the assignment is about; a `MAV_CMD` adds an
+enum value to `ardupilotmega.xml` and a `case` in the Copter command handler,
+carries up to 7 float params, and gets acknowledgement and retry for free via
+`COMMAND_ACK`. A brand-new message ID means hand-rolling all of that. For the
+three-motor-recovery goal the ack matters: a safety command must be *known* to
+have arrived. Both still require rebuilding ArduCopter **and** pymavlink.
 
-**Trap — motor numbering (step 5→6).** The user-facing 1–4 is not necessarily
-`_thrust_rpyt_out[0..3]`. ArduPilot's motor-test ordering, the frame's motor
-map, and the servo channel index are three different numberings for a quad-X.
-Verify which one "motor 1" means before wiring the index straight through, and
-record the answer here.
+**Motor numbering — resolved 2026-08-25** against `AP_MotorsMatrix.cpp:592`
+(`MOTOR_FRAME_TYPE_X`). `add_motors()` assigns `motor_num` from the array index,
+so index = output channel − 1. Angles are degrees clockwise from the nose:
+
+| Internal index | Output ch. | Angle | Position | Prop | Test order |
+|---|---|---|---|---|---|
+| 0 | SERVO1 | +45° | **front right** | CCW | 1 |
+| 1 | SERVO2 | −135° | back left | CCW | 3 |
+| 2 | SERVO3 | −45° | front left | CW | 4 |
+| 3 | SERVO4 | +135° | back right | CW | 2 |
+
+So "motor 1 = front right" is correct. **But output channel and motor-test order
+are not the same mapping** — they agree only for motor 1. Channel 2 is back
+left; test order 2 is back right. Use the **output-channel** convention (1–4 →
+index 0–3), which is what users see in `RCOU` logs and in `MOT_` parameters, and
+say so in the message's field documentation.
 
 **Sending from MAVProxy (step 3).** A custom message needs a way to be typed at
 the MAVProxy prompt. Cleanest is a small MAVProxy module registering a
@@ -268,7 +313,10 @@ comparison baseline for the commanded kill built in Phases 4–5.
 | Vendored `install-prereqs-ubuntu.sh` into `docker/` | Avoids a redundant multi-GB clone at image-build time; this router's DNS chokes on parallel submodule fetches |
 | No ROS / ROS 2 | The plugin talks to SITL directly over UDP; ROS only matters for ROS-side control |
 | ~~Headless by default (`gz sim -s`)~~ **Reversed 2026-08-25** | The assignment requires the drone visualised during the demo. Headless stays useful for iteration, but the deliverable needs rendering — see §4 |
-| Render on the Intel iGPU via Mesa; no NVIDIA passthrough | Works with zero host changes. NVIDIA would need `nvidia-container-toolkit` to inject version-matched driver blobs — not worth a host-level change unless Intel proves too slow (§4) |
+| Accept software rendering (llvmpipe); no NVIDIA passthrough | Measured: RTF is 0.47 with *and* without the GUI, so rendering is not the bottleneck and passthrough would gain nothing (§4). Supersedes an earlier row claiming the Intel iGPU would serve — wrong, the display is NVIDIA-driven |
+| Trigger is a new **`MAV_CMD`**, not a new message ID | Same plumbing, but gets `COMMAND_ACK` retry/acknowledgement for free and carries 7 float params. For a safety command that must be known to have arrived, the ack is the deciding factor (§5) |
+| Motor index uses the **output-channel** convention (1–4 → index 0–3) | What users see in `RCOU` logs and `MOT_` params. Motor-test order is a different mapping and agrees only for motor 1 (§5) |
+| Explain-first working style on ArduPilot changes | Learning the ArduCopter structure is an explicit project goal, not a by-product (§1) |
 | GUI wiring is conditional on `DISPLAY`, not a separate compose file | One code path serves both headless iteration and on-screen demo; nothing to forget to switch |
 | `ffmpeg`/`mesa-utils` added as a late Dockerfile layer | Keeps the ~10-minute prereq layer cached; this router's apt DNS is flaky (§7) |
 | Keep Phase 3 (`SIM_ENGINE_FAIL` baseline) despite it not being in the assignment | Proves the sim stack independently, so a Phase 5 failure is attributable to the patch and not the environment |
@@ -338,9 +386,9 @@ itself is not version-controlled here (§3).
 
 ### Open questions
 
-- Literal new MAVLink message, or a new `MAV_CMD` inside `COMMAND_LONG`? (§5)
-- Which numbering does "motor 1–4" mean — motor-test order, frame motor map, or
-  servo channel? (§5)
+- Does the supervisor accept a `MAV_CMD` as "a new MAVLink message"? Decided to
+  use one (§5); worth confirming, it is the only interpretive risk in the task.
+- Why is Gazebo's RTF only 0.47 on an idle 8-core box? (§4)
 - Is a live GUI required for the demo, or is a recording acceptable? (§4)
 
 ---
@@ -349,6 +397,7 @@ itself is not version-controlled here (§3).
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | `run.sh` now finds the desktop's X display over ssh, so GUI setup needs no physical session. Corrected §4: display is NVIDIA-driven and rendering is software, but measured RTF is identical with and without the GUI, so no passthrough. Resolved motor numbering from source (§5); chose `MAV_CMD` over a new message ID (§6); recorded the learning goal (§1) |
 | 2026-08-25 | Fixed `run.sh` GUI path (unbound `DISPLAY` when headless); moved GZ env vars into the image so they survive container recreation and reach non-interactive `docker exec`; made `-it` conditional |
 | 2026-08-25 | Wired the GUI into `docker/run.sh` (X socket, `/dev/dri`, `DISPLAY`, `xhost` auth) and added `ffmpeg` + `mesa-utils` to the image. Corrected §4: this machine has a display and GPUs, so `xvfb`/`x11vnc` are unnecessary |
 | 2026-08-25 | Renamed `PROJECTS.md` → `PROJECT.md`; updated every reference in `CLAUDE.md`, `AGENTS.md`, `README.md` and `.gitignore` |

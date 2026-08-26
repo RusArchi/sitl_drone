@@ -54,6 +54,21 @@ the code is right — **fix `PROJECT.md` in the same change**, don't just move o
 
 Don't duplicate the setup guide into `PROJECT.md`; link to it.
 
+## Working style on ArduPilot changes
+
+Learning ArduCopter's structure is an explicit goal of this project (PROJECT.md
+§1) — the end goal is a safety function that keeps the aircraft controllable on
+three motors. So, for anything touching ArduPilot:
+
+- **Explain before changing.** What the code does now, where the change goes,
+  why there and not elsewhere.
+- **Prefer hand-doable steps.** Name the file and function and make small,
+  inspectable edits; don't bulk-patch what could be understood.
+- **Understanding beats shortcuts** when they conflict.
+
+This does not apply to the surrounding tooling (docker, scripts, docs) — move
+fast there.
+
 ## Project-specific notes
 
 - ArduPilot and `ardupilot_gazebo` are **separate clones** at `~/ardupilot` and
