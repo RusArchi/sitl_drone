@@ -65,9 +65,15 @@ RUN USER=rusik SKIP_AP_GIT_CHECK=1 SKIP_AP_GRAPHIC_ENV=1 SKIP_AP_COMPLETION_ENV=
 # (PROJECT.md §7), so adding packages here keeps every expensive layer cached.
 #   ffmpeg     — record the demo flight
 #   mesa-utils — glxinfo, to tell working GL from a silent software fallback
+#   xdotool    — find/position the Gazebo window so ffmpeg can capture just it
+#   x11-utils  — xdpyinfo, for screen geometry
+#   xvfb       — virtual X server for RECORDING. The desktop is Wayland, and an
+#                XWayland root window has no readable pixels, so x11grab against
+#                the real display fails with BadMatch. Xvfb's root window is a
+#                plain pixmap, so capture is reliable and deterministic.
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg mesa-utils \
+      ffmpeg mesa-utils xdotool x11-utils xvfb \
     && rm -rf /var/lib/apt/lists/*
 USER rusik
 

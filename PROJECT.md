@@ -131,6 +131,8 @@ Next action is Phase 3 (§8 Next actions).
 | [CLAUDE.md](CLAUDE.md) | Rules for agents working in this repo |
 | [AGENTS.md](AGENTS.md) | Pointer to CLAUDE.md, for agents that look for this filename |
 | [docs/ENVIRONMENT_SETUP.md](docs/ENVIRONMENT_SETUP.md) | Full from-scratch provisioning reference (11 sections) |
+| [scripts/record_demo.sh](scripts/record_demo.sh) | Bring up Gazebo + SITL on a private Xvfb display, record the flight to `recordings/*.mp4` |
+| [docker/gz/gui-record.config](docker/gz/gui-record.config) | Minimal Gazebo GUI for recording — 3D view only, no docked panels |
 | [scripts/setup_env.sh](scripts/setup_env.sh) | Host provisioner; `--check` verifies without changing anything |
 | [scripts/fly_demo.py](scripts/fly_demo.py) | Phase 2 smoke flight: arm, take off, fly a square, land. Scripted, no sticks |
 | [docker/Dockerfile](docker/Dockerfile) | Reproducible Ubuntu 24.04 build/sim image |
@@ -386,6 +388,18 @@ Do not rediscover these.
   project modifies.
 - **Start Gazebo before SITL.** The JSON link does not form the other way round.
 
+- **Screen capture of the desktop does not work.** The desktop is GNOME/Wayland;
+  an XWayland root window has no readable pixels, so `ffmpeg -f x11grab` against
+  the real display fails with `BadMatch` / "Cannot get the image data" and writes
+  a 262-byte file. Record against a private **Xvfb** display instead — its root
+  window is an ordinary pixmap. `wf-recorder` is not an alternative here: it
+  needs `wlr-screencopy`, which is a wlroots protocol that mutter does not
+  implement (GNOME uses xdg-desktop-portal + PipeWire).
+- **`sim_vehicle.py` opens an xterm when `DISPLAY` is set**, and it lands on top
+  of the render view. SITL needs no display — launch it with `env -u DISPLAY`.
+- **Gazebo's `/gui/screenshot` service returns `data: true` and writes nothing.**
+  Do not trust the boolean; check for the file.
+
 Anticipated, not yet hit (Phases 4–5):
 
 - **pymavlink will not know the new message.** The venv's pymavlink comes from
@@ -428,6 +442,7 @@ itself is not version-controlled here (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | Added `scripts/record_demo.sh` + a minimal Gazebo GUI config; the Phase 2 flight is now recorded to `recordings/*.mp4`. Added `xvfb`, `xdotool`, `x11-utils` to the image |
 | 2026-08-26 | **Phase 2 done** — `scripts/fly_demo.py` flies the iris in Gazebo end to end (arm, takeoff, square, land). Added §10 troubleshooting log |
 | 2026-08-25 | `run.sh` now finds the desktop's X display over ssh, so GUI setup needs no physical session. Corrected §4 Environment: display is NVIDIA-driven and rendering is software, but measured RTF is identical with and without the GUI, so no passthrough. Resolved motor numbering from source (§5 Technical ground truth); chose `MAV_CMD` over a new message ID (§6 Decisions); recorded the learning goal (§1 Mission) |
 | 2026-08-25 | Fixed `run.sh` GUI path (unbound `DISPLAY` when headless); moved GZ env vars into the image so they survive container recreation and reach non-interactive `docker exec`; made `-it` conditional |
@@ -527,3 +542,35 @@ is append-only** — unlike the rest of the file, history here *is* the value.
   to ask. §4 Environment and §6 Decisions sat wrong in the meantime, which is worse than absent.
 - **Lesson:** the rule exists because stale ground truth actively misleads. Apply
   it to one's own findings, not just to code changes.
+
+### 2026-08-27 — the flight recording came out as a 262-byte file
+
+- **Believed:** with `ffmpeg` in the image and a reachable X display, capturing
+  the Gazebo window with `-f x11grab -i :0+0,0` would just work. The display had
+  already been proven usable — `run.sh gui-check` rendered through it, and
+  Gazebo's window really was on screen.
+- **Actually:** the desktop is GNOME/**Wayland**. Gazebo was showing through
+  XWayland, and an XWayland root window holds no readable pixels, so every frame
+  grab failed with `BadMatch` ("Cannot get the image data ... error_code:8") and
+  ffmpeg wrote a 262-byte container with no video. The flight itself completed
+  perfectly, which made it look like a recording bug rather than an X one.
+  Fixed by rendering to a private **Xvfb** display, whose root window is a plain
+  pixmap, and capturing that.
+- **Lesson:** "the display works" is not the same as "the display is readable".
+  Rendering *to* a surface and reading pixels *back* are different capabilities,
+  and Wayland deliberately removes the second one for X clients. When capture is
+  needed, control the display server rather than borrowing the user's.
+
+### 2026-08-27 — three takes recorded before anything useful was in frame
+
+- **Believed:** once capture worked, the recording was done.
+- **Actually:** the first usable take showed an empty runway with SITL's xterm
+  covering a quarter of it; the second showed Gazebo's docked Entity Tree and
+  Component Inspector occupying half the frame; the third framed the scene but
+  left the aircraft a few pixels wide. Each needed a separate fix — `env -u
+  DISPLAY` for the xterm, a stripped `--gui-config` for the panels, and
+  `/gui/follow` with a tight offset for the framing.
+- **Lesson:** verify the *content* of an artefact, not just that it was produced.
+  A 21 MB mp4 and a 2 MB mp4 both look like success from the shell; only pulling
+  a frame out and looking at it showed the difference. Extract and inspect one
+  frame before declaring a recording done.
