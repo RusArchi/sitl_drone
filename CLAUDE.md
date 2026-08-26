@@ -22,11 +22,53 @@ finished until the file reflects it.
 | Verify something works (or find it broken) | §2 status — say what was verified and when |
 | Make a design or tooling choice with an alternative | §6 decisions — one row, with the *why* |
 | Hit a non-obvious failure and solve it | §7 gotchas — so nobody pays for it twice |
+| **Get something wrong** — a false diagnosis, a broken change, a claim that did not hold | §10 troubleshooting log — see below. Not optional |
 | Change the mixer, a line reference, or a param plan | §5 technical ground truth |
 | Add, move, or delete a tracked file | §3 repo layout |
 | Commit anything substantive | §9 changelog — one row, dated |
 
 Also bump **Last updated** at the top, and the **Branch** line if it changed.
+
+## Record your own mistakes — §10, every time
+
+When you get something wrong, write it into **§10 Troubleshooting log** as part
+of the same change that fixes it. This is not a courtesy; a wrong diagnosis that
+goes unrecorded is repeated by the next session, which has no memory of it.
+
+**What counts.** A diagnosis that turned out to be false. A change that broke
+something that was working. A claim stated with confidence that did not hold. A
+tool or command that silently lied to you. A recommendation withdrawn after
+measuring. Bugs in code you wrote *that the user hit*.
+
+**What does not.** Ordinary iteration, a compile error you fixed a minute later,
+or anything the user never saw and that taught you nothing.
+
+**Format** — three lines, no more:
+
+```
+### YYYY-MM-DD — one-line title, in the user's terms
+
+- **Believed:** what you thought was true, and why it was plausible.
+- **Actually:** what was true, with the evidence that settled it.
+- **Lesson:** the generalisation. Must be usable by someone who hits a
+  *different* instance of the same trap.
+```
+
+Add **Cost:** when the mistake cost real time or destroyed a working state.
+
+**Rules.**
+
+- **§10 is append-only.** Everywhere else in this file, correct stale lines. Here,
+  the history is the point — never edit or delete an old entry.
+- **Write it plainly.** No hedging, no blaming the tool when the tool behaved as
+  documented and you misread it.
+- **Do it in the same change.** "I'll note it later" is how it gets lost.
+- **Don't editorialise in the user's direction.** The entry is for the next
+  engineer, not an apology.
+
+If a mistake also leaves a reusable trap for anyone (not just a lesson about how
+you worked), put the trap in §7 gotchas *as well* — §10 explains what went wrong,
+§7 tells the next person how to avoid it.
 
 ## How to write in it
 
@@ -37,6 +79,7 @@ Also bump **Last updated** at the top, and the **Branch** line if it changed.
 - **Correct, don't append.** When reality changes, edit the stale line. This file is
   a current-state document with a changelog at the end, not an append-only log.
 - **Prune.** If a section stops being true or useful, delete it. Length is not value.
+  Exception: §10 is append-only.
 - **Keep it self-contained.** Someone with no session history should be able to pick
   up the work from this file alone.
 

@@ -73,7 +73,7 @@ the trigger should be a `MAV_CMD`.
 | # | Phase | State |
 |---|---|---|
 | 1 | Provision the build/sim environment | **Done** |
-| 2 | ArduCopter SITL flying an iris quad in Gazebo, with visualisation | **Not started** (GUI plumbing done, unverified) |
+| 2 | ArduCopter SITL flying an iris quad in Gazebo, with visualisation | **Done** 2026-08-26 |
 | 3 | Baseline: kill a rotor with `SIM_ENGINE_FAIL` (no code change) | **Not started** |
 | 4 | Define the new MAVLink message; regenerate C headers + pymavlink | **Not started** |
 | 5 | Handle it in Copter; propagate motor index down to the ESC output | **Not started** |
@@ -86,27 +86,39 @@ environment.
 
 ## 2. Current status
 
-**Phase 1 complete — environment provisioned and verified. No ArduPilot patches yet.**
+**Phase 2 complete — the iris flies in Gazebo under scripted control.**
 
-Verified working as of 2026-08-25:
+Verified 2026-08-26: `scripts/fly_demo.py` connects to SITL, waits for GPS (3D
+fix in ~16 s), arms in GUIDED, takes off to 15 m, flies a 20 m square via
+`SET_POSITION_TARGET_LOCAL_NED`, lands and disarms. The Gazebo GUI renders it
+live on the desktop. That exercises the entire chain the motor-kill work will
+modify: mixer → PWM → `_simulator_servos()` → JSON → `ardupilot_gazebo` → physics.
 
-- Docker container `sitl_drone` (image `sitl_drone:latest`, `ubuntu:24.04`) running.
-- Bind mounts live: `~/ardupilot`, `~/ardupilot_gazebo`, `~/Projects/sitl_drone`,
-  plus a named `sitl_drone-ccache` volume.
-- `scripts/setup_env.sh --check` reports **Environment OK** — gz sim 8.15.0,
-  `libArduPilotPlugin.so` built, `arducopter` SITL binary built, venv present,
-  `pymavlink` importable.
+Environment (verified 2026-08-25, unchanged):
+
+- Container `sitl_drone` (`ubuntu:24.04`) with `~/ardupilot`, `~/ardupilot_gazebo`,
+  the repo and a ccache volume bind-mounted.
+- `docker/run.sh check` → **Environment OK** — gz sim 8.15.0, plugin built,
+  `arducopter` built, venv present, `pymavlink` importable.
 - GZ env vars and the `Tools/autotest` PATH entry are baked into the **image** as
-  `ENV` (2026-08-25), so they survive container recreation and are visible to
-  non-interactive `docker exec`. Verified: `docker exec sitl_drone printenv
-  GZ_SIM_SYSTEM_PLUGIN_PATH` returns the path with no login shell.
+  `ENV`, so they survive container recreation and reach non-interactive
+  `docker exec`.
+- GUI wiring is live: `run.sh` finds the desktop's X display even over ssh.
+  Rendering is software (llvmpipe) and that is fine — see §4.
 
-Nothing is blocked. The next action is Phase 2.
+### How to bring the sim up
 
-Rendering path added 2026-08-25 (`docker/run.sh` GUI wiring, `ffmpeg` +
-`mesa-utils` in the image). Both `run.sh` code paths tested; the headless path
-runs and `run.sh check` passes. **Not yet verified on screen** — that needs the
-container recreated from a graphical session. See §4.
+Order matters — Gazebo first, then SITL, or the JSON link never forms.
+
+```bash
+docker exec -d sitl_drone bash -lc 'setsid gz sim -v2 -r iris_runway.sdf > /tmp/gz_sim.log 2>&1'
+docker exec -d sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && cd ~/ardupilot && \
+    setsid sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --no-mavproxy > /tmp/sitl.log 2>&1'
+docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && \
+    python3 /workspace/sitl_drone/scripts/fly_demo.py'
+```
+
+Next action is Phase 3 (§8).
 
 ---
 
@@ -120,6 +132,7 @@ container recreated from a graphical session. See §4.
 | [AGENTS.md](AGENTS.md) | Pointer to CLAUDE.md, for agents that look for this filename |
 | [docs/ENVIRONMENT_SETUP.md](docs/ENVIRONMENT_SETUP.md) | Full from-scratch provisioning reference (11 sections) |
 | [scripts/setup_env.sh](scripts/setup_env.sh) | Host provisioner; `--check` verifies without changing anything |
+| [scripts/fly_demo.py](scripts/fly_demo.py) | Phase 2 smoke flight: arm, take off, fly a square, land. Scripted, no sticks |
 | [docker/Dockerfile](docker/Dockerfile) | Reproducible Ubuntu 24.04 build/sim image |
 | [docker/run.sh](docker/run.sh) | `build` / `run` / `shell` / `check` / `gui-check` / `stop` wrapper; wires the GUI in when `DISPLAY` is set |
 | [docker/first-run.sh](docker/first-run.sh) | One-time in-container provisioning against the bind-mounted clones (idempotent) |
@@ -350,6 +363,18 @@ Do not rediscover these.
 - Without `GZ_SIM_SYSTEM_PLUGIN_PATH` / `GZ_SIM_RESOURCE_PATH`, `gz sim` starts
   fine and the drone just sits inert — **no error is printed**. #1 setup failure.
 
+- **Nothing streams over MAVLink until you ask.** ArduPilot only sends periodic
+  telemetry to a GCS that requested it. MAVProxy does this for you, so with
+  `--no-mavproxy` and a raw pymavlink connection, `recv_match(type="GPS_RAW_INT")`
+  blocks forever and looks exactly like a dead simulator. Send
+  `request_data_stream_send(..., MAV_DATA_STREAM_ALL, 4, 1)` after the heartbeat.
+- **`FRAME_CLASS`/`FRAME_TYPE` can come up unset**, and pre-arm then fails with
+  `Arm: Motors: Check frame class and type`. Set `FRAME_CLASS=1` (quad) and
+  `FRAME_TYPE=1` (X). These two are what select the `MOTOR_FRAME_TYPE_X` motor
+  table at `AP_MotorsMatrix.cpp:592` — i.e. they populate the very mixer this
+  project modifies.
+- **Start Gazebo before SITL.** The JSON link does not form the other way round.
+
 Anticipated, not yet hit (Phases 4–5):
 
 - **pymavlink will not know the new message.** The venv's pymavlink comes from
@@ -365,12 +390,7 @@ Anticipated, not yet hit (Phases 4–5):
 
 ## 8. Next actions
 
-1. **Phase 2** — bring up the full loop: `gz sim -v4 -r iris_runway.sdf` in one
-   shell, `sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON` in another.
-   Confirm `JSON control interface set to 127.0.0.1:9002`, EKF/GPS lock,
-   `mode STABILIZE`, and `arm throttle` spinning props. Recreate the container
-   from a graphical session first (`./run.sh stop && ./run.sh run`), then confirm
-   with `./run.sh gui-check` that GL is hardware and not llvmpipe.
+1. ~~**Phase 2**~~ — done 2026-08-26, see §2.
 2. **Phase 3** — `param set SIM_ENGINE_FAIL 2` + `param set SIM_ENGINE_MUL 0` in
    flight. Confirm the sim stack reacts. Baseline recorded.
 3. **Phase 4** — add the message to `ardupilotmega.xml` (ID 11061), rebuild
@@ -397,6 +417,7 @@ itself is not version-controlled here (§3).
 
 | Date | Change |
 |---|---|
+| 2026-08-26 | **Phase 2 done** — `scripts/fly_demo.py` flies the iris in Gazebo end to end (arm, takeoff, square, land). Added §10 troubleshooting log |
 | 2026-08-25 | `run.sh` now finds the desktop's X display over ssh, so GUI setup needs no physical session. Corrected §4: display is NVIDIA-driven and rendering is software, but measured RTF is identical with and without the GUI, so no passthrough. Resolved motor numbering from source (§5); chose `MAV_CMD` over a new message ID (§6); recorded the learning goal (§1) |
 | 2026-08-25 | Fixed `run.sh` GUI path (unbound `DISPLAY` when headless); moved GZ env vars into the image so they survive container recreation and reach non-interactive `docker exec`; made `-it` conditional |
 | 2026-08-25 | Wired the GUI into `docker/run.sh` (X socket, `/dev/dri`, `DISPLAY`, `xhost` auth) and added `ffmpeg` + `mesa-utils` to the image. Corrected §4: this machine has a display and GPUs, so `xvfb`/`x11vnc` are unnecessary |
@@ -405,3 +426,93 @@ itself is not version-controlled here (§3).
 | 2026-08-25 | Added `PROJECT.md` + `CLAUDE.md`; committed the `docker/` environment (Dockerfile, run.sh, first-run.sh, vendored prereq script) |
 | 2026-08-25 | Environment verified end-to-end in the container; image rebuilt with `cppzmq-dev` baked in |
 | 2026-08-25 | Initial commit: `docs/ENVIRONMENT_SETUP.md`, `scripts/setup_env.sh`, README with the mixer map |
+
+---
+
+## 10. Troubleshooting log — wrong turns and what they cost
+
+Mistakes, false diagnoses and dead ends, kept so they are not repeated. Each
+entry: what was believed, what was actually true, and the lesson. **This section
+is append-only** — unlike the rest of the file, history here *is* the value.
+
+### 2026-08-26 — "Gazebo crashed" (it never did)
+
+- **Believed:** Gazebo had died, because `pgrep -c "gz sim"` returned 0.
+- **Actually:** it had been running for 16 minutes and was visible on the monitor
+  the whole time. `pgrep` matches the process *name*, and `gz` is a Ruby script,
+  so its `comm` is `ruby`. The pattern could never match.
+- **Cost:** a false diagnosis that a second mistake was then built on.
+- **Lesson:** use `pgrep -f` / `ps -eo args` to match command lines. And when a
+  process check disagrees with what a human can see on screen, the check is wrong.
+
+### 2026-08-26 — Started a second Gazebo server on top of a working one
+
+- **Believed:** restarting Gazebo would restore the JSON link.
+- **Actually:** the first server was still running, so two `ArduPilotPlugin`
+  instances contended for UDP 9002/9003. This *broke* a link that had been fine.
+- **Cost:** the working state was destroyed and had to be rebuilt.
+- **Lesson:** before restarting anything, prove the old instance is gone. A
+  remedy applied to a misdiagnosis is worse than no remedy.
+
+### 2026-08-26 — "No GPS lock" blamed on the simulator
+
+- **Believed:** SITL was not receiving physics from Gazebo.
+- **Actually:** `fly_demo.py` never requested MAVLink data streams. ArduPilot
+  sends periodic telemetry only to a GCS that asked; MAVProxy normally does it.
+  With `--no-mavproxy`, `GPS_RAW_INT` simply never arrived.
+- **Cost:** two failed flight attempts and a long detour into the sim stack.
+- **Lesson:** a silent timeout waiting for a message is as likely to mean *nobody
+  asked for it* as *the producer is broken*. Check the subscription first — it is
+  cheaper than the alternative.
+
+### 2026-08-25 — `run.sh` aborted with "DISPLAY: unbound variable"
+
+- **Believed:** the GUI wiring was complete after the path with a display worked.
+- **Actually:** `gui_args` emitted a blank line when `DISPLAY` was unset, so
+  `mapfile` built a *one-element* array rather than an empty one; the
+  "display detected" branch ran and dereferenced unset `$DISPLAY` under `set -u`.
+- **Cost:** the user hit the crash, not the author.
+- **Lesson:** test the branch you cannot personally exercise. "It worked for me"
+  covers exactly one path.
+
+### 2026-08-25 — "Render on the Intel iGPU"
+
+- **Believed:** with two GPUs present, Mesa would drive the Intel one.
+- **Actually:** the monitors hang off the NVIDIA card, so X hands the container
+  an NVIDIA DRM device that Mesa cannot drive — it falls back to llvmpipe. The
+  Intel path was never reachable.
+- **Lesson:** which GPU *exists* is not which GPU *drives the display*. Check the
+  pci id the GL client is actually handed.
+
+### 2026-08-25 — `glxgears` offered as evidence
+
+- **Believed:** 2492 FPS on llvmpipe meant software rendering was fine for Gazebo.
+- **Actually:** meaningless — `glxgears` draws trivial geometry. The number that
+  settled it was Gazebo's own real-time factor, identical (0.47) with and without
+  the GUI, which showed rendering was not the bottleneck at all.
+- **Lesson:** benchmark the real workload. A synthetic number that happens to
+  support the conclusion is not support.
+
+### 2026-08-25 — Premature recommendation of `nvidia-container-toolkit`
+
+- **Believed:** hardware acceleration was needed, so the host needed the toolkit.
+- **Actually:** measurement showed rendering costs nothing here. Caught before
+  acting, but the recommendation had already been made in writing.
+- **Lesson:** measure before recommending a host-level change.
+
+### 2026-08-25 — Wait loop reported success immediately
+
+- **Believed:** `out=$(grep -c ... || echo 0)`; `[ "$out" != "0" ]` detects a match.
+- **Actually:** `grep -c` prints `0` *and* exits non-zero, so `|| echo 0` appended
+  a second line. `out` became `"0\n0"`, never equal to `"0"`, so the loop exited
+  on the first iteration claiming success.
+- **Lesson:** in a `$(cmd || fallback)`, the fallback *appends* to output that was
+  already produced. Use `grep -q` and test the exit status.
+
+### 2026-08-25 — PROJECT.md not updated in the same change
+
+- **Believed:** documenting the GPU findings could follow the code commit.
+- **Actually:** CLAUDE.md requires the update in the same change, and the user had
+  to ask. §4 and §6 sat wrong in the meantime, which is worse than absent.
+- **Lesson:** the rule exists because stale ground truth actively misleads. Apply
+  it to one's own findings, not just to code changes.
