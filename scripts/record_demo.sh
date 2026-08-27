@@ -114,12 +114,38 @@ else
 # Camera: without this the view sits at ground level and the iris is never in
 # frame. follow keeps it centred for the whole flight; the offset puts the
 # camera behind and above, which reads better than straight overhead.
-if [[ "${FOLLOW:-0}" == "1" ]]; then
-    log "following $MODEL"
-    gz service -s /gui/follow --reqtype gz.msgs.StringMsg --reptype gz.msgs.Boolean \
-        --timeout 3000 --req "data: \"$MODEL\"" >/dev/null 2>&1 || log "follow failed (non-fatal)"
-    gz service -s /gui/follow/offset --reqtype gz.msgs.Vector3d --reptype gz.msgs.Boolean \
-        --timeout 3000 --req "x: -6, y: 0, z: 2" >/dev/null 2>&1 || true
+# Camera mode. Gazebo offers five, via the /gui/track TOPIC (not a service --
+# gz-gui 8 ships the CameraTrack message but advertises no matching service):
+#
+#   static    leave the camera at the gui-config pose
+#   track     camera stays put and pans/tilts to keep the vehicle centred (1)
+#   follow    rigid BODY-frame offset (2) -- whips around once the vehicle
+#             tumbles, which is why the first crash take was empty sky
+#   free_look follows position, does not inherit orientation (3)
+#   look_at   follows AND always aims at the vehicle (4) -- best for a crash
+#
+case "${CAM_MODE:-static}" in
+    static)    CAM_ID="" ;;
+    track)     CAM_ID=1 ;;
+    follow)    CAM_ID=2 ;;
+    free_look) CAM_ID=3 ;;
+    look_at)   CAM_ID=4 ;;
+    *) echo "unknown CAM_MODE '${CAM_MODE}'" >&2; exit 1 ;;
+esac
+
+if [[ -n "$CAM_ID" ]]; then
+    OFF="${CAM_OFFSET:-x: -10, y: 0, z: 4}"
+    log "camera mode ${CAM_MODE} on $MODEL (offset: $OFF)"
+    if [[ "$CAM_ID" == "1" ]]; then
+        REQ="track_mode: $CAM_ID, track_target: {name: \"$MODEL\"}"
+    else
+        REQ="track_mode: $CAM_ID, follow_target: {name: \"$MODEL\"}, follow_offset: {$OFF}, follow_pgain: ${CAM_PGAIN:-0.8}"
+    fi
+    timeout 8 gz topic -t /gui/track -m gz.msgs.CameraTrack -p "$REQ" >/dev/null 2>&1 \
+        || log "camera mode command failed (non-fatal)"
+    sleep 2
+    CONFIRM="$(timeout 5 gz topic -e -t /gui/currently_tracked 2>/dev/null | grep -m1 track_mode || true)"
+    log "  gazebo reports: ${CONFIRM:-<no confirmation>}"
 fi
 
 # Re-assert size: the window is not always fully realised at first resize.

@@ -147,6 +147,7 @@ Next action is Phase 3 (§8 Next actions).
 | [docs/ENVIRONMENT_SETUP.md](docs/ENVIRONMENT_SETUP.md) | Full from-scratch provisioning reference (11 sections) |
 | [scripts/fly_fail.py](scripts/fly_fail.py) | Phase 3: straight-line cruise, then kill motor 1 via `SIM_ENGINE_FAIL`, log the fall |
 | [docker/gz/gui-crash.config](docker/gz/gui-crash.config) | Static side-on Gazebo camera for the failure run |
+| [docker/gz/gui-crash-close.config](docker/gz/gui-crash-close.config) | Closer static side-on variant (camera 20 m off the line, not 38 m) |
 | [scripts/record_demo.sh](scripts/record_demo.sh) | Bring up Gazebo + SITL on a private Xvfb display, record the flight to `recordings/*.mp4` |
 | [docker/gz/gui-record.config](docker/gz/gui-record.config) | Minimal Gazebo GUI for recording — 3D view only, no docked panels |
 | [scripts/setup_env.sh](scripts/setup_env.sh) | Host provisioner; `--check` verifies without changing anything |
@@ -232,6 +233,24 @@ would serve was wrong for the same reason: the display is NVIDIA-driven.)
 blocking — Gazebo and SITL stay in lockstep, so the physics remain valid, demos
 just take 2× wall clock. Suspects: the 1 ms physics step, or a
 `real_time_update_rate` cap in the world file.
+
+### Camera modes for recording
+
+`scripts/record_demo.sh` takes `CAM_MODE`, which maps to Gazebo's five tracking
+modes published on the `/gui/track` topic:
+
+| `CAM_MODE` | Mode | Behaviour |
+|---|---|---|
+| `static` (default) | — | Camera stays at the `gui-config` pose |
+| `track` | `TRACK` (1) | Camera stays put, pans/tilts to keep the vehicle centred |
+| `follow` | `FOLLOW` (2) | Rigid **body-frame** offset — whips around on a tumble |
+| `free_look` | `FOLLOW_FREE_LOOK` (3) | Follows position, does not inherit orientation |
+| `look_at` | `FOLLOW_LOOK_AT` (4) | Follows **and** always aims at the vehicle |
+
+`CAM_OFFSET` (e.g. `x: -7, y: -3, z: 2`) and `CAM_PGAIN` tune the chase. Higher
+pgain tightens tracking; at the default 0.8 the camera lags badly behind a
+falling aircraft. Verified 2026-08-27: `look_at` keeps the vehicle in frame
+through the tumble, where plain `follow` loses it completely.
 
 ### Ports (loopback; increment with `sim_vehicle.py -I N`)### Ports (loopback; increment with `sim_vehicle.py -I N`)
 
@@ -430,8 +449,13 @@ Do not rediscover these.
   must clear it before flying — `fly_fail.py` does.
 - **`/gui/follow` holds a BODY-frame offset.** The moment the aircraft tumbles
   the camera whips around with it and the vehicle leaves frame entirely. Fine for
-  level flight, useless for a crash — use a static camera pose there
-  (`docker/gz/gui-crash.config`).
+  level flight, useless for a crash. Use `CAM_MODE=look_at` instead — see below.
+- **Gazebo's camera modes live on the `/gui/track` TOPIC, not a service.**
+  gz-gui 8 ships `gz.msgs.CameraTrack` and the `/gui/track` string inside
+  `libCameraTracking.so`, but advertises **no** matching service, so
+  `gz service -s /gui/track` just times out. Publish to the topic instead:
+  `gz topic -t /gui/track -m gz.msgs.CameraTrack -p 'track_mode: 4, ...'`.
+  Confirm with `gz topic -e -t /gui/currently_tracked`.
 - **`time_boot_ms` counts from SITL boot, not from script start.** Using it
   directly to measure elapsed sim time overstates it badly; take a delta.
 
@@ -477,6 +501,7 @@ itself is not version-controlled here (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | Added `CAM_MODE` to `record_demo.sh` exposing Gazebo's five camera-tracking modes; `look_at` keeps the aircraft framed through the tumble. Fixed the RTF measurement to use a delta — now reports ~0.57 and writes a real-time cut |
 | 2026-08-27 | Phase 3 done: `fly_fail.py` kills motor 1 in flight via `SIM_ENGINE_FAIL`, recorded. Reversed the `MAV_CMD` decision — the assignment requires a genuinely new message. Answered the RTF question and added post-hoc re-timing |
 | 2026-08-27 | Added `scripts/record_demo.sh` + a minimal Gazebo GUI config; the Phase 2 flight is now recorded to `recordings/*.mp4`. Added `xvfb`, `xdotool`, `x11-utils` to the image |
 | 2026-08-26 | **Phase 2 done** — `scripts/fly_demo.py` flies the iris in Gazebo end to end (arm, takeoff, square, land). Added §10 troubleshooting log |
