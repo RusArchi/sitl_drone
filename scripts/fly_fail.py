@@ -23,7 +23,7 @@ from pymavlink import mavutil
 
 import os
 
-CONNECT = "tcp:127.0.0.1:5760"
+CONNECT = os.environ.get("CONNECT", "tcp:127.0.0.1:5760")
 
 # Env-overridable, because framing the shot is a tuning loop: a camera close
 # enough to show the airframe cannot also contain a long cruise and a high fall.

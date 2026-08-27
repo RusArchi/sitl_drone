@@ -148,6 +148,8 @@ Next action is Phase 3 (§8 Next actions).
 | [scripts/fly_fail.py](scripts/fly_fail.py) | Phase 3: straight-line cruise, then kill motor 1 via `SIM_ENGINE_FAIL`, log the fall |
 | [docker/gz/gui-crash.config](docker/gz/gui-crash.config) | Static side-on Gazebo camera for the failure run |
 | [docker/gz/gui-crash-close.config](docker/gz/gui-crash-close.config) | Closer static side-on variant (camera 20 m off the line, not 38 m) |
+| [scripts/camera_pose.sh](scripts/camera_pose.sh) | Print the live GUI camera pose as a paste-ready `<camera_pose>` |
+| [docker/gz/gui-crash-above.config](docker/gz/gui-crash-above.config) | Elevated diagonal camera over the crash zone |
 | [scripts/record_demo.sh](scripts/record_demo.sh) | Bring up Gazebo + SITL on a private Xvfb display, record the flight to `recordings/*.mp4` |
 | [docker/gz/gui-record.config](docker/gz/gui-record.config) | Minimal Gazebo GUI for recording — 3D view only, no docked panels |
 | [scripts/setup_env.sh](scripts/setup_env.sh) | Host provisioner; `--check` verifies without changing anything |
@@ -251,6 +253,27 @@ modes published on the `/gui/track` topic:
 pgain tightens tracking; at the default 0.8 the camera lags badly behind a
 falling aircraft. Verified 2026-08-27: `look_at` keeps the vehicle in frame
 through the tumble, where plain `follow` loses it completely.
+
+### Setting a camera angle by hand
+
+1. Bring the sim up with the GUI on the desktop and fly the view with the mouse:
+   `docker exec -e VISIBLE=1 -e FLIGHT=fly_fail.py sitl_drone /workspace/sitl_drone/scripts/record_demo.sh`
+2. `docker exec sitl_drone /workspace/sitl_drone/scripts/camera_pose.sh` prints the
+   current pose, converted from Gazebo's quaternion into the `x y z roll pitch yaw`
+   that `<camera_pose>` wants.
+3. Either paste the `<camera_pose>` line into a `docker/gz/*.config`, or pass the
+   numbers straight in: `CAM_POSE="22 -14 22 0 0.71 2.28"`.
+
+Round-trip verified 2026-08-27: a config pose of `22 -14 22 0 0.715 2.279` reads
+back identically.
+
+### Recording telemetry alongside the sim
+
+`TELEM=1` widens the canvas to 1920x1080 and puts a live MAVProxy terminal beside
+Gazebo, so one recording carries the aircraft, the telemetry and any typed
+command. **MAVProxy owns SITL's TCP link and fans out over UDP to the flight
+script** (`CONNECT=udp:127.0.0.1:14551`), which is the standard ArduPilot
+arrangement — see §7 Gotchas for the three wrong ways to wire this.
 
 ### Ports (loopback; increment with `sim_vehicle.py -I N`)### Ports (loopback; increment with `sim_vehicle.py -I N`)
 
@@ -459,6 +482,22 @@ Do not rediscover these.
 - **`time_boot_ms` counts from SITL boot, not from script start.** Using it
   directly to measure elapsed sim time overstates it badly; take a delta.
 
+- **Wiring a second MAVLink client has three dead ends.** A SITL TCP port takes
+  exactly one client, so a telemetry pane cannot simply share 5760 with the
+  flight script. Of the spare ports SITL advertises, **5762 refuses connections**
+  and **5763 connects but never streams** (`link 1 down`). `--out` is a *MAVProxy*
+  option, so it silently does nothing under `--no-mavproxy`. And letting
+  `sim_vehicle.py` start MAVProxy fails here — it runs it in the foreground of a
+  shell with no TTY, so MAVProxy exits at once and takes the sim down
+  (`SIM_VEHICLE: MAVProxy exited / Killing tasks`). What works: start MAVProxy
+  yourself in an xterm owning `tcp:5760` with `--out 127.0.0.1:14551`, and point
+  the flight script at that UDP port.
+- **Camera height, not distance, is what makes the aircraft visible.** A camera
+  only a few metres above the cruise altitude puts the aircraft exactly on the
+  horizon, where it disappears into the skyline at any distance.
+- **Narrowing `<horizontal_fov>` renders a blank grey scene** with no error
+  logged. The telephoto approach to framing does not work in gz-gui 8.
+
 Anticipated, not yet hit (Phases 4–5):
 
 - **pymavlink will not know the new message.** The venv's pymavlink comes from
@@ -501,6 +540,7 @@ itself is not version-controlled here (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | `TELEM=1` records a live MAVProxy pane beside Gazebo. Added `camera_pose.sh` and `CAM_POSE` for setting angles by hand, plus an elevated diagonal crash camera |
 | 2026-08-27 | Added `CAM_MODE` to `record_demo.sh` exposing Gazebo's five camera-tracking modes; `look_at` keeps the aircraft framed through the tumble. Fixed the RTF measurement to use a delta — now reports ~0.57 and writes a real-time cut |
 | 2026-08-27 | Phase 3 done: `fly_fail.py` kills motor 1 in flight via `SIM_ENGINE_FAIL`, recorded. Reversed the `MAV_CMD` decision — the assignment requires a genuinely new message. Answered the RTF question and added post-hoc re-timing |
 | 2026-08-27 | Added `scripts/record_demo.sh` + a minimal Gazebo GUI config; the Phase 2 flight is now recorded to `recordings/*.mp4`. Added `xvfb`, `xdotool`, `x11-utils` to the image |

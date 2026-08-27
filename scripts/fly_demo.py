@@ -11,12 +11,13 @@ Run inside the container, with the venv active:
     source ~/ardupilot/venv-ardupilot/bin/activate
     python3 /workspace/sitl_drone/scripts/fly_demo.py
 """
+import os
 import sys
 import time
 
 from pymavlink import mavutil
 
-CONNECT = "tcp:127.0.0.1:5760"
+CONNECT = os.environ.get("CONNECT", "tcp:127.0.0.1:5760")
 TAKEOFF_ALT = 15.0      # metres
 SQUARE_SIDE = 20.0      # metres
 GUIDED = 4              # copter mode number

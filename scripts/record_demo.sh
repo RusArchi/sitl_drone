@@ -81,6 +81,19 @@ log "starting Gazebo GUI ($WORLD)"
 # gui-record.config = wide shot for the square demo.
 # gui-crash.config  = static side-on shot for the motor-failure run.
 GUI_CFG="${GUI_CFG:-$REPO/docker/gz/gui-record.config}"
+
+# CAM_POSE overrides the camera_pose baked into that config, so an angle can be
+# handed in without editing a file:
+#     CAM_POSE="22 -14 22 0 0.71 2.28"
+# Get the numbers for a view you like by flying the GUI camera with the mouse and
+# running scripts/camera_pose.sh, which prints them in exactly this order.
+if [[ -n "${CAM_POSE:-}" ]]; then
+    GEN_CFG="/tmp/gui-cam-override.config"
+    sed -E "s|<camera_pose>[^<]*</camera_pose>|<camera_pose>${CAM_POSE}</camera_pose>|" \
+        "$GUI_CFG" > "$GEN_CFG"
+    GUI_CFG="$GEN_CFG"
+    log "camera pose overridden: $CAM_POSE"
+fi
 setsid gz sim -v2 -r --gui-config "$GUI_CFG" "$WORLD" >/tmp/gz_sim.log 2>&1 &
 
 # Wait for the render window to actually exist before trying to capture it.
@@ -99,9 +112,14 @@ log "gazebo window $WIN at 0,0 ${GZ_W}x${GZ_H}"
 
 # --------------------------------------------------------------------- sitl
 log "starting ArduCopter SITL"
-# env -u DISPLAY: sim_vehicle.py opens the SITL console in an xterm when a
-# display exists, and that window lands on top of the render view. SITL needs
-# no display, so hide it from that process only.
+# SITL always runs headless with --no-mavproxy. env -u DISPLAY matters: with a
+# display, sim_vehicle.py opens the SITL console in an xterm right on top of the
+# render view.
+#
+# Letting sim_vehicle.py start MAVProxy instead does not work here -- it runs it
+# in the foreground of a shell with no TTY, so MAVProxy exits immediately and
+# takes the whole sim down ("SIM_VEHICLE: MAVProxy exited / Killing tasks").
+# Under TELEM we therefore start our own MAVProxy in an xterm below.
 setsid env -u DISPLAY bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && cd ~/ardupilot && \
     sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --no-mavproxy" \
     >/tmp/sitl.log 2>&1 &
@@ -120,25 +138,33 @@ sleep 5
 # so that is the default. MAVProxy prints every STATUSTEXT the vehicle emits and
 # accepts typed commands, which is what makes the custom-message demo legible.
 if [[ "${TELEM:-0}" == "1" ]]; then
-    log "starting MAVProxy telemetry pane"
-    setsid xterm -geometry 78x62+1280+0 -fa Monospace -fs 9 \
+    # MAVProxy owns SITL's TCP link (a SITL TCP port accepts a single client) and
+    # fans out to the flight script over UDP. That is the standard ArduPilot
+    # arrangement and it is what lets one recording show the aircraft, the live
+    # telemetry, and any command typed at the MAV> prompt.
+    FANOUT="${FANOUT_PORT:-14551}"
+    log "starting MAVProxy (owns tcp:5760, fans out to udp:127.0.0.1:$FANOUT)"
+    setsid xterm -geometry 80x64+${GZ_W}+0 -fa Monospace -fs 9 \
         -bg black -fg green -title "MAVProxy telemetry" \
         -e bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && \
-            mavproxy.py --master tcp:127.0.0.1:${TELEM_PORT:-5763} --force-connected" \
-        >/tmp/mavproxy.log 2>&1 &
-    # MAVProxy takes a while to connect and draw; poll rather than sleeping once.
+            mavproxy.py --master tcp:127.0.0.1:5760 --out 127.0.0.1:$FANOUT \
+                        --force-connected 2>&1 | tee /tmp/mavproxy.log" \
+        >/dev/null 2>&1 &
+
     TWIN=""
-    for _ in $(seq 1 20); do
+    for _ in $(seq 1 25); do
         TWIN="$(xdotool search --name 'MAVProxy telemetry' 2>/dev/null | tail -1 || true)"
         [[ -n "$TWIN" ]] && break
         sleep 1
     done
     if [[ -n "$TWIN" ]]; then
         xdotool windowmove "$TWIN" "$GZ_W" 0 2>/dev/null || true
-        log "  telemetry pane at ${GZ_W},0"
+        log "telemetry pane at ${GZ_W},0"
     else
-        log "  telemetry pane did not appear (see /tmp/mavproxy.log)"
+        log "telemetry pane did not appear (see /tmp/mavproxy.log)"
     fi
+    export CONNECT="udp:127.0.0.1:$FANOUT"
+    sleep 8   # let MAVProxy establish the link before the script connects
 fi
 
 # ---------------------------------------------------------------- recording
@@ -199,7 +225,7 @@ sleep 2
 # ------------------------------------------------------------------- flight
 log "flying the demo"
 set +e
-bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && python3 $REPO/scripts/$FLIGHT" \
+bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && CONNECT=\"${CONNECT:-}\" python3 $REPO/scripts/$FLIGHT" \
     2>&1 | tee /tmp/flight_out.txt
 FLIGHT_RC=${PIPESTATUS[0]}
 set -e
