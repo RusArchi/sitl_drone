@@ -26,10 +26,13 @@ TAG="${FLIGHT%.py}"
 # script's own output, the MAVProxy session, and the SITL/Gazebo logs. Keeping
 # them together means a recording can still be explained weeks later -- the logs
 # used to land in /tmp and be overwritten by the next run.
-RUN_DIR="$OUT_DIR/${TAG}-$STAMP"
-OUT="$RUN_DIR/video.mp4"
-FLIGHT_LOG="$RUN_DIR/flight.log"
-MAVPROXY_LOG="$RUN_DIR/mavproxy.log"
+# Every file carries the run id, not just the directory: a video sent to someone
+# on its own still has to be identifiable, and "video.mp4" is not.
+RUN_ID="${TAG}-$STAMP"
+RUN_DIR="$OUT_DIR/$RUN_ID"
+OUT="$RUN_DIR/$RUN_ID.mp4"
+FLIGHT_LOG="$RUN_DIR/$RUN_ID-flight.log"
+MAVPROXY_LOG="$RUN_DIR/$RUN_ID-mavproxy.log"
 WORLD="${WORLD:-iris_runway.sdf}"
 MODEL="${MODEL:-iris_with_gimbal}"   # entity to keep in frame
 FPS="${FPS:-15}"
@@ -65,7 +68,7 @@ mkdir -p "$RUN_DIR"
     echo "  CRUISE_SPEED=${CRUISE_SPEED:-}"
     echo "  KILL_AFTER=${KILL_AFTER:-}"
     echo "  MOTOR=${MOTOR:-}"
-} > "$RUN_DIR/run.txt"
+} > "$RUN_DIR/$RUN_ID-run.txt"
 
 if [[ "${VISIBLE:-0}" == "1" ]]; then
     [[ -n "${DISPLAY:-}" ]] || { echo "VISIBLE=1 needs DISPLAY; recreate via run.sh" >&2; exit 1; }
@@ -84,7 +87,7 @@ cleanup() {
     # SITL and Gazebo write to /tmp and get overwritten by the next run; keep a
     # copy beside the video while it still corresponds to this flight.
     for f in /tmp/sitl.log /tmp/gz_sim.log /tmp/ArduCopter.log; do
-        [[ -f "$f" ]] && cp -f "$f" "$RUN_DIR/$(basename "$f")" 2>/dev/null || true
+        [[ -f "$f" ]] && cp -f "$f" "$RUN_DIR/$RUN_ID-$(basename "$f")" 2>/dev/null || true
     done
     [[ -n "${FF_PID:-}" ]] && kill -INT "$FF_PID" 2>/dev/null && wait "$FF_PID" 2>/dev/null || true
     [[ -n "${XVFB_PID:-}" ]] && kill "$XVFB_PID" 2>/dev/null || true
@@ -301,7 +304,7 @@ import re
 m = re.search(r'sim=([0-9.]+) wall=([0-9.]+)', '''$HINT''')
 s, w = float(m.group(1)), float(m.group(2))
 print(f'{max(0.05, min(1.0, s/w)):.4f}')")"
-        RT="$RUN_DIR/video-realtime.mp4"
+        RT="$RUN_DIR/$RUN_ID-realtime.mp4"
         log "measured RTF $RTF — writing real-time version"
         if ffmpeg -hide_banner -loglevel error -y -i "$OUT" \
                 -filter:v "setpts=${RTF}*PTS" -an "$RT" 2>/dev/null; then
@@ -312,7 +315,7 @@ print(f'{max(0.05, min(1.0, s/w)):.4f}')")"
     else
         log "no RTF_HINT from the flight script; skipping real-time version"
     fi
-    echo "finished:   $(date -Is)" >> "$RUN_DIR/run.txt"
+    echo "finished:   $(date -Is)" >> "$RUN_DIR/$RUN_ID-run.txt"
     log "run directory: $RUN_DIR"
     ls -1 "$RUN_DIR" | sed 's/^/    /' 
 else
