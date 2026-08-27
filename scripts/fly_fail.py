@@ -21,11 +21,17 @@ import time
 
 from pymavlink import mavutil
 
+import os
+
 CONNECT = "tcp:127.0.0.1:5760"
-TAKEOFF_ALT = 20.0      # metres -- high enough for a clear fall, low enough to frame
-CRUISE_N = 40.0         # metres north, straight line
-KILL_AFTER = 5.0        # seconds into the cruise leg before cutting the motor
-MOTOR = 1               # 1 = front right (AP_MotorsMatrix.cpp:592)
+
+# Env-overridable, because framing the shot is a tuning loop: a camera close
+# enough to show the airframe cannot also contain a long cruise and a high fall.
+# Shrinking the flight is what buys a big aircraft in frame.
+TAKEOFF_ALT = float(os.environ.get("TAKEOFF_ALT", 12.0))   # metres
+CRUISE_N = float(os.environ.get("CRUISE_N", 18.0))         # metres north
+KILL_AFTER = float(os.environ.get("KILL_AFTER", 4.0))      # s into the cruise
+MOTOR = int(os.environ.get("MOTOR", 1))   # 1 = front right (AP_MotorsMatrix.cpp:592)
 GUIDED = 4
 WALL_START = 0.0
 SIM_START = None
