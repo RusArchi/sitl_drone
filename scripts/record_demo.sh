@@ -22,7 +22,14 @@ OUT_DIR="$REPO/recordings"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 FLIGHT="${FLIGHT:-fly_demo.py}"       # which script in scripts/ to fly
 TAG="${FLIGHT%.py}"
-OUT="$OUT_DIR/${TAG}-$STAMP.mp4"
+# One self-contained directory per run: video, the real-time cut, the flight
+# script's own output, the MAVProxy session, and the SITL/Gazebo logs. Keeping
+# them together means a recording can still be explained weeks later -- the logs
+# used to land in /tmp and be overwritten by the next run.
+RUN_DIR="$OUT_DIR/${TAG}-$STAMP"
+OUT="$RUN_DIR/video.mp4"
+FLIGHT_LOG="$RUN_DIR/flight.log"
+MAVPROXY_LOG="$RUN_DIR/mavproxy.log"
 WORLD="${WORLD:-iris_runway.sdf}"
 MODEL="${MODEL:-iris_with_gimbal}"   # entity to keep in frame
 FPS="${FPS:-15}"
@@ -39,7 +46,26 @@ if [[ "${TELEM:-0}" == "1" ]]; then
 else
     W=1280; H=800;  GZ_W=1280; GZ_H=800
 fi
-mkdir -p "$OUT_DIR"
+mkdir -p "$RUN_DIR"
+
+# Written before anything can fail, so even an aborted run says what it was.
+{
+    echo "run:        $TAG"
+    echo "started:    $(date -Is)"
+    echo "flight:     $FLIGHT"
+    echo "world:      $WORLD"
+    echo "gui config: ${GUI_CFG:-<default>}"
+    echo "cam pose:   ${CAM_POSE:-<from gui config>}"
+    echo "cam mode:   ${CAM_MODE:-static}"
+    echo "telemetry:  ${TELEM:-0}"
+    echo
+    echo "flight parameters (as passed; blank means the script default)"
+    echo "  TAKEOFF_ALT=${TAKEOFF_ALT:-}"
+    echo "  CRUISE_N=${CRUISE_N:-}"
+    echo "  CRUISE_SPEED=${CRUISE_SPEED:-}"
+    echo "  KILL_AFTER=${KILL_AFTER:-}"
+    echo "  MOTOR=${MOTOR:-}"
+} > "$RUN_DIR/run.txt"
 
 if [[ "${VISIBLE:-0}" == "1" ]]; then
     [[ -n "${DISPLAY:-}" ]] || { echo "VISIBLE=1 needs DISPLAY; recreate via run.sh" >&2; exit 1; }
@@ -55,6 +81,11 @@ fi
 
 cleanup() {
     log "cleaning up"
+    # SITL and Gazebo write to /tmp and get overwritten by the next run; keep a
+    # copy beside the video while it still corresponds to this flight.
+    for f in /tmp/sitl.log /tmp/gz_sim.log /tmp/ArduCopter.log; do
+        [[ -f "$f" ]] && cp -f "$f" "$RUN_DIR/$(basename "$f")" 2>/dev/null || true
+    done
     [[ -n "${FF_PID:-}" ]] && kill -INT "$FF_PID" 2>/dev/null && wait "$FF_PID" 2>/dev/null || true
     [[ -n "${XVFB_PID:-}" ]] && kill "$XVFB_PID" 2>/dev/null || true
     pkill -f 'sim_vehicle.py' 2>/dev/null || true
@@ -156,7 +187,7 @@ if [[ "${TELEM:-0}" == "1" ]]; then
         -bg black -fg green -title "MAVProxy telemetry" \
         -e bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && \
             mavproxy.py --master tcp:127.0.0.1:5760 --out 127.0.0.1:$FANOUT \
-                        --force-connected 2>&1 | tee /tmp/mavproxy.log" \
+                        --force-connected 2>&1 | tee \"$MAVPROXY_LOG\"" \
         >/dev/null 2>&1 &
 
     TWIN=""
@@ -169,19 +200,19 @@ if [[ "${TELEM:-0}" == "1" ]]; then
         xdotool windowmove "$TWIN" "$GZ_W" 0 2>/dev/null || true
         log "telemetry pane at ${GZ_W},0"
     else
-        log "telemetry pane did not appear (see /tmp/mavproxy.log)"
+        log "telemetry pane did not appear (see $MAVPROXY_LOG)"
     fi
     export CONNECT="udp:127.0.0.1:$FANOUT"
     # Confirm MAVProxy actually linked; a dead link here strands the flight
     # script waiting for a heartbeat with no clue why.
     for _ in $(seq 1 30); do
-        grep -q "Detected vehicle" /tmp/mavproxy.log 2>/dev/null && break
+        grep -q "Detected vehicle" "$MAVPROXY_LOG" 2>/dev/null && break
         sleep 1
     done
-    if grep -q "Detected vehicle" /tmp/mavproxy.log 2>/dev/null; then
+    if grep -q "Detected vehicle" "$MAVPROXY_LOG" 2>/dev/null; then
         log "  MAVProxy linked to the vehicle"
     else
-        log "  WARNING: MAVProxy has not detected the vehicle (see /tmp/mavproxy.log)"
+        log "  WARNING: MAVProxy has not detected the vehicle (see $MAVPROXY_LOG)"
     fi
 fi
 
@@ -244,7 +275,7 @@ sleep 2
 log "flying the demo"
 set +e
 bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && CONNECT=\"${CONNECT:-}\" python3 $REPO/scripts/$FLIGHT" \
-    2>&1 | tee /tmp/flight_out.txt
+    2>&1 | tee "$FLIGHT_LOG"
 FLIGHT_RC=${PIPESTATUS[0]}
 set -e
 
@@ -263,14 +294,14 @@ elif [[ -s "$OUT" ]]; then
     # own clock -- which IS simulation time -- against wall time; re-time with
     # that. Raising the step to 2 ms reaches RTF ~0.97 but breaks SITL's JSON
     # link, so the correction is done in post (§10 Troubleshooting log).
-    HINT="$(grep -o 'RTF_HINT sim=[0-9.]* wall=[0-9.]*' /tmp/flight_out.txt | tail -1 || true)"
+    HINT="$(grep -o 'RTF_HINT sim=[0-9.]* wall=[0-9.]*' "$FLIGHT_LOG" | tail -1 || true)"
     if [[ -n "$HINT" ]]; then
         RTF="$(python3 -c "
 import re
 m = re.search(r'sim=([0-9.]+) wall=([0-9.]+)', '''$HINT''')
 s, w = float(m.group(1)), float(m.group(2))
 print(f'{max(0.05, min(1.0, s/w)):.4f}')")"
-        RT="${OUT%.mp4}-realtime.mp4"
+        RT="$RUN_DIR/video-realtime.mp4"
         log "measured RTF $RTF — writing real-time version"
         if ffmpeg -hide_banner -loglevel error -y -i "$OUT" \
                 -filter:v "setpts=${RTF}*PTS" -an "$RT" 2>/dev/null; then
@@ -281,6 +312,9 @@ print(f'{max(0.05, min(1.0, s/w)):.4f}')")"
     else
         log "no RTF_HINT from the flight script; skipping real-time version"
     fi
+    echo "finished:   $(date -Is)" >> "$RUN_DIR/run.txt"
+    log "run directory: $RUN_DIR"
+    ls -1 "$RUN_DIR" | sed 's/^/    /' 
 else
     echo "recording is empty — check the capture geometry" >&2
     exit 1

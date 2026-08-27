@@ -2,3 +2,4 @@
 # Durable project state belongs in PROJECT.md.
 .hermes-state.md
 recordings/
+recordings/_archive/

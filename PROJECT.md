@@ -292,8 +292,20 @@ docker exec \
 | `CAM_MODE` | `static` \| `track` \| `follow` \| `free_look` \| `look_at` |
 | `GUI_CFG` | which `docker/gz/*.config` to render with |
 
-Output lands in `recordings/`: a wall-clock capture and a `-realtime` cut
-re-timed by the measured RTF.
+Each run gets its own directory, `recordings/<flight>-<timestamp>/`:
+
+| File | What it is |
+|---|---|
+| `video.mp4` | wall-clock capture |
+| `video-realtime.mp4` | the same, re-timed by the measured RTF |
+| `run.txt` | every parameter the run was given, plus start/finish times |
+| `flight.log` | the flight script's own output |
+| `mavproxy.log` | the full MAVProxy session (only with `TELEM=1`) |
+| `sitl.log`, `gz_sim.log`, `ArduCopter.log` | copied out of `/tmp` on the way out |
+
+The logs used to be written to `/tmp` and overwritten by the next run, so a
+recording could not be explained afterwards. `run.txt` is written before
+anything can fail, so even an aborted run says what it was.
 
 **Framing rules of thumb, learned the hard way:**
 
@@ -628,6 +640,7 @@ itself is not version-controlled here (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | Each recording is now a self-contained directory — video, real-time cut, `run.txt` manifest, flight/MAVProxy/SITL/Gazebo logs |
 | 2026-08-27 | `set_mode` now retries (a single attempt raced the EKF and killed runs with "mode GUIDED not accepted"); added `CRUISE_SPEED`; documented every recording knob and the framing rules |
 | 2026-08-27 | Planned Phase 4 and purged the `MAV_CMD` assumption from §1 Mission, §5 Technical ground truth, §6 Decisions and §8 Next actions — the 2026-08-27 reversal had been recorded but not propagated. Fixed the landing point to `handle_message()`, confirmed id 11061 free, and established that a MAVProxy module is required, not optional |
 | 2026-08-27 | Restored `InteractiveViewControl` to the GUI configs (its absence froze the camera) and added `tune_camera.sh`, which leaves Gazebo open for setting an angle by hand |
