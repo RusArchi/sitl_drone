@@ -124,12 +124,20 @@ setsid env -u DISPLAY bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate &
     sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --no-mavproxy" \
     >/tmp/sitl.log 2>&1 &
 
-log "waiting for SITL to open its MAVLink port"
-for _ in $(seq 1 90); do
-    grep -q "Waiting for connection" /tmp/sitl.log 2>/dev/null && break
+# Wait for the port to actually ACCEPT a connection, not merely for a hopeful
+# line in the log. sim_vehicle.py prints "Waiting for connection" before the
+# socket is bound, so grepping for it starts MAVProxy too early: it gets
+# ECONNREFUSED, gives up despite --force-connected, and the flight script then
+# waits forever for a heartbeat that will never arrive.
+log "waiting for SITL to accept connections on 5760"
+SITL_UP=0
+for _ in $(seq 1 120); do
+    if (echo > /dev/tcp/127.0.0.1/5760) 2>/dev/null; then SITL_UP=1; break; fi
     sleep 1
 done
-sleep 5
+[[ "$SITL_UP" == "1" ]] || { echo "SITL never opened 5760; see /tmp/sitl.log" >&2; exit 1; }
+log "  SITL is listening"
+sleep 3
 
 # ------------------------------------------------------------------ telemetry
 # MAVProxy attaches to a SPARE SITL port. 5760 belongs to the flight script -- two
@@ -164,7 +172,17 @@ if [[ "${TELEM:-0}" == "1" ]]; then
         log "telemetry pane did not appear (see /tmp/mavproxy.log)"
     fi
     export CONNECT="udp:127.0.0.1:$FANOUT"
-    sleep 8   # let MAVProxy establish the link before the script connects
+    # Confirm MAVProxy actually linked; a dead link here strands the flight
+    # script waiting for a heartbeat with no clue why.
+    for _ in $(seq 1 30); do
+        grep -q "Detected vehicle" /tmp/mavproxy.log 2>/dev/null && break
+        sleep 1
+    done
+    if grep -q "Detected vehicle" /tmp/mavproxy.log 2>/dev/null; then
+        log "  MAVProxy linked to the vehicle"
+    else
+        log "  WARNING: MAVProxy has not detected the vehicle (see /tmp/mavproxy.log)"
+    fi
 fi
 
 # ---------------------------------------------------------------- recording
