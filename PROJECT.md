@@ -7,7 +7,7 @@
 >
 > Update rules: see [CLAUDE.md](CLAUDE.md).
 
-**Last updated:** 2026-08-25
+**Last updated:** 2026-08-27
 **Branch:** `claude/ardupilot-motor-control-gazebo-84hfq8`
 **Upstream:** https://github.com/RusArchi/sitl_drone
 
@@ -66,7 +66,7 @@ That changes the working style. For anything touching ArduPilot:
   that shows the control path is worth more here than a clever one that hides it.
 
 The three-motor recovery goal also informs design choices *now* — see §5 Technical ground truth on why
-the trigger should be a `MAV_CMD`.
+the new message reserves a `failure_type` field it does not yet use.
 
 ### Phases
 
@@ -132,7 +132,7 @@ docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate 
     python3 /workspace/sitl_drone/scripts/fly_demo.py'
 ```
 
-Next action is Phase 3 (§8 Next actions).
+Next action is Phase 4 (§8 Next actions).
 
 ---
 
@@ -255,6 +255,42 @@ pgain tightens tracking; at the default 0.8 the camera lags badly behind a
 falling aircraft. Verified 2026-08-27: `look_at` keeps the vehicle in frame
 through the tumble, where plain `follow` loses it completely.
 
+### Running a recording — all the knobs
+
+Everything is environment variables on `scripts/record_demo.sh`; nothing needs
+editing to change a flight or a shot.
+
+```bash
+docker exec \
+  -e FLIGHT=fly_fail.py \        # fly_demo.py (square) or fly_fail.py (motor cut)
+  -e TELEM=1 \                   # add the MAVProxy pane; canvas becomes 1920x1080
+  -e CAM_POSE="3.7 12.2 4.6 0 0.41 -2.58" \   # x y z roll pitch yaw (radians)
+  -e TAKEOFF_ALT=4 \             # metres
+  -e CRUISE_N=-10 \              # metres NORTH; negative flies south
+  -e CRUISE_SPEED=2 \            # m/s (sets WPNAV_SPEED); 0 = ArduPilot default
+  -e KILL_AFTER=4 \              # seconds into the cruise before the motor is cut
+  -e MOTOR=1 \                   # 1-4, output-channel numbering; 1 = front right
+  -e CAM_MODE=static \           # static | track | follow | free_look | look_at
+  -e GUI_CFG=/workspace/sitl_drone/docker/gz/gui-crash-above.config \
+  sitl_drone /workspace/sitl_drone/scripts/record_demo.sh
+```
+
+Output lands in `recordings/`: a wall-clock capture and a `-realtime` cut
+re-timed by the measured RTF.
+
+**Framing rules of thumb, learned the hard way:**
+
+- **World axes:** `+X` is north, `+Y` is east, `+Z` is up. Camera `yaw 0` looks
+  along `+X`; `+pitch` looks **down**. The Gazebo origin grid spans about ±10 m,
+  so "where the grid ends" is roughly 10 m out.
+- **Fly toward where the camera is pointing.** A camera aimed south-west sees
+  nothing of a flight heading north — use a negative `CRUISE_N`.
+- **A downward-pitched camera cannot see an aircraft above it.** With the camera
+  at 4.6 m and a 8 m cruise, the aircraft sits above the top of frame. Either fly
+  below the camera height or raise the camera.
+- **Height separates the aircraft from the skyline.** A camera only a few metres
+  above the cruise altitude puts it exactly on the horizon, where it vanishes.
+
 ### Setting a camera angle by hand
 
 1. From a terminal **on the machine's desktop**:
@@ -316,10 +352,10 @@ The signal path the assignment asks for, end to end:
 
 | # | Link in the chain | Where |
 |---|---|---|
-| 1 | New `MAV_CMD` enum value | `modules/mavlink/message_definitions/v1.0/ardupilotmega.xml`, in the `MAV_CMD` enum |
+| 1 | New `<message>` definition, id **11061** | `modules/mavlink/message_definitions/v1.0/ardupilotmega.xml`, in the `<messages>` block |
 | 2 | C headers | regenerated automatically by waf's `mavgen` task (`Tools/ardupilotwaf/mavgen.py`) — editing the XML and rebuilding is enough |
-| 3 | Python side (MAVProxy / script) | **no rebuild needed** — `COMMAND_LONG` already exists, so stock pymavlink can send the new id as a number. Regenerate only to get the *name* |
-| 4 | Copter receives it | `ArduCopter/GCS_MAVLink_Copter.cpp:470` `handle_command_int_packet()` — add a `case`, exactly as `MAV_CMD_DO_MOTOR_TEST` does at line 487 |
+| 3 | Python side (MAVProxy / script) | **rebuild required** — a new msgid changes the wire format, so the venv's PyPI `pymavlink` must be replaced by one generated from the edited XML (§7 Gotchas) |
+| 4 | Copter receives it | `ArduCopter/GCS_MAVLink_Copter.cpp:1179` `GCS_MAVLINK_Copter::handle_message()` — add a `case` to the `msg.msgid` switch, as `SET_ATTITUDE_TARGET` does at line 1184. Unhandled ids fall through to the base class and are **silently dropped** |
 | 5 | Stored state | new setter on `AP_MotorsMatrix` / `AP_MotorsMulticopter` |
 | 6 | **Applied to ESC output** | `AP_Motors/AP_MotorsMatrix.cpp:180`, the `rc_write()` call inside `output_to_motors()` |
 | 7 | SITL: PWM → physics | `AP_HAL_SITL/SITL_State.cpp:287` `_simulator_servos()` (no change needed) |
@@ -330,13 +366,24 @@ genuine final ESC command that the stability patch cannot rescale. This is the
 "command to the ESC drivers" the assignment names, and it is identical on real
 hardware — which is the point.
 
-**Command definition (step 1).** Add an entry to the `MAV_CMD` enum in
-`ardupilotmega.xml`. `param1` = motor number 1–4 (output-channel convention,
-see below); leave `param2` free for a later failure *mode* (hard stop, partial
-thrust) once the three-motor recovery work starts. `MAV_CMD_USER_1..5`
-(31010–31014, already in `common.xml`) are reserved for exactly this kind of
-experiment and need **no XML edit at all** — worth using for the first
-round-trip test before committing to a named command.
+**Message definition (step 1).** Add a `<message>` to the `<messages>` block of
+`ardupilotmega.xml`. Verified 2026-08-27 against `cbe0c39`: the highest id in the
+whole dialect tree's ArduPilot range is **11060** (`NAMED_VALUE_STRING`), and
+**11061 is free** across every included XML. Proposed shape:
+
+```xml
+<message id="11061" name="MOTOR_FAILURE_SET">
+  <field type="uint8_t" name="target_system">System ID</field>
+  <field type="uint8_t" name="target_component">Component ID</field>
+  <field type="uint8_t" name="motor">Motor to fail, 1-4, output-channel convention (SERVOn)</field>
+  <field type="uint8_t" name="failure_type">0 = restore, 1 = hard stop</field>
+</message>
+```
+
+`target_system`/`target_component` because every ArduPilot handler routes on them;
+omitting them is exactly the sort of shortcut this exercise is about. `failure_type`
+is reserved for partial-thrust failures once the three-motor recovery work starts
+(§1 Mission) — it carries only `0`/`1` for now.
 
 **New message vs. new `MAV_CMD` — use a NEW MESSAGE.** Decided 2026-08-27,
 reversing the 2026-08-25 choice of `MAV_CMD`. The assignment says "create a new
@@ -378,10 +425,14 @@ left; test order 2 is back right. Use the **output-channel** convention (1–4 �
 index 0–3), which is what users see in `RCOU` logs and in `MOT_` parameters, and
 say so in the message's field documentation.
 
-**Sending from MAVProxy (step 3).** MAVProxy's built-in `long` command sends an
-arbitrary `COMMAND_LONG`, so `long <cmd-id> <motor>` works with **no custom
-module and no pymavlink rebuild**. A small MAVProxy module registering
-`motorfail <1-4>` is nicer to demo but is sugar, not a requirement.
+**Sending from MAVProxy (step 3) — a custom module is REQUIRED.** Verified
+2026-08-27: MAVProxy has **no** command that sends an arbitrary message.
+`mavproxy_cmdlong.py` provides `long`, which encodes a `COMMAND_LONG` and nothing
+else; there is no generic equivalent. So the only way to send `MOTOR_FAILURE_SET`
+from a MAVProxy terminal — which is what the assignment asks for — is a small
+module registering `motorfail <1-4>`. This reverses the earlier note calling such
+a module "sugar": that was written when the trigger was a `MAV_CMD`, and it does
+not survive the switch to a real message. Build it in Phase 4, not Phase 6.
 
 ### Baseline that needs no code (Phase 3)
 
@@ -403,6 +454,9 @@ comparison baseline for the commanded kill built in Phases 4–5.
 | Kill at `rc_write()`, not in `output_armed_stabilizing()` | Downstream of the stability patch, so the mixer can't compensate the zero away |
 | ~~`MOT_KILL_MASK` bitmask param, not a new MAVLink message~~ **Reversed 2026-08-25** | The assignment requires a new MAVLink message carrying a motor index 1–4. The protocol work *is* the exercise, not overhead to be avoided |
 | ~~Use a `MAV_CMD` rather than a new message id~~ **Reversed 2026-08-27** | Chosen for the free `COMMAND_ACK` and zero pymavlink rebuild. But a `MAV_CMD` is a value inside `COMMAND_LONG`, not a new message, and the assignment asks for a new message. Requirement beats convenience. Cost: pymavlink **must** be regenerated, since a new message id changes the wire format and CRC-extra |
+| Message id **11061** in `ardupilotmega.xml`, named `MOTOR_FAILURE_SET` | First free id above ArduPilot's highest in-use 11060; verified free across the whole dialect tree at `cbe0c39`. Defined in `ardupilotmega.xml` rather than a private dialect because that is what waf's mavgen and MAVProxy already load by default — no dialect plumbing to get wrong (§5 Technical ground truth) |
+| A custom MAVProxy `motorfail` module is required, not optional | MAVProxy can only send an arbitrary `COMMAND_LONG` (`long`), never an arbitrary message. With a real message id there is no other way to send it from a MAVProxy terminal, which the assignment requires. Reverses the earlier "sugar, not a requirement" note (§5 Technical ground truth) |
+| Land the message in `handle_message()`, not a command handler | A new message id is dispatched by `msg.msgid`, not through `COMMAND_LONG`. Unhandled ids fall through to `GCS_MAVLINK::handle_message()` and vanish without a word, so the `case` is what makes receipt observable at all (§5 Technical ground truth) |
 | Kill one motor by index (1–4), not a bitmask | Matches the assignment's payload. A bitmask is a superset and can come later if useful |
 | Keep `rc_write()` as the injection point | Unchanged by the reversal above — only the *trigger* changed, not where the zero is applied |
 | ArduPilot + plugin as **bind-mounted host clones**, not baked into the image | Sources, venv and build artifacts persist and stay usable by host-side tooling |
@@ -410,7 +464,6 @@ comparison baseline for the commanded kill built in Phases 4–5.
 | No ROS / ROS 2 | The plugin talks to SITL directly over UDP; ROS only matters for ROS-side control |
 | ~~Headless by default (`gz sim -s`)~~ **Reversed 2026-08-25** | The assignment requires the drone visualised during the demo. Headless stays useful for iteration, but the deliverable needs rendering — see §4 Environment |
 | Accept software rendering (llvmpipe); no NVIDIA passthrough | Measured: RTF is 0.47 with *and* without the GUI, so rendering is not the bottleneck and passthrough would gain nothing (§4 Environment). Supersedes an earlier row claiming the Intel iGPU would serve — wrong, the display is NVIDIA-driven |
-| Trigger is a new **`MAV_CMD`**, not a new message ID | Same plumbing, but gets `COMMAND_ACK` retry/acknowledgement for free and carries 7 float params. For a safety command that must be known to have arrived, the ack is the deciding factor (§5 Technical ground truth) |
 | Motor index uses the **output-channel** convention (1–4 → index 0–3) | What users see in `RCOU` logs and `MOT_` params. Motor-test order is a different mapping and agrees only for motor 1 (§5 Technical ground truth) |
 | Explain-first working style on ArduPilot changes | Learning the ArduCopter structure is an explicit project goal, not a by-product (§1 Mission) |
 | GUI wiring is conditional on `DISPLAY`, not a separate compose file | One code path serves both headless iteration and on-screen demo; nothing to forget to switch |
@@ -527,9 +580,15 @@ Anticipated, not yet hit (Phases 4–5):
 1. ~~**Phase 2**~~ — done 2026-08-26, see §2 Current status.
 2. **Phase 3** — `param set SIM_ENGINE_FAIL 2` + `param set SIM_ENGINE_MUL 0` in
    flight. Confirm the sim stack reacts. Baseline recorded.
-3. **Phase 4** — add the message to `ardupilotmega.xml` (ID 11061), rebuild
-   ArduCopter, **and** reinstall pymavlink from the submodule (§7 Gotchas). Prove
-   round-trip: MAVProxy sends, SITL logs receipt. No motor behaviour yet.
+3. **Phase 4** — four steps, in order:
+   1. Add `MOTOR_FAILURE_SET` (id 11061) to `ardupilotmega.xml` (§5 Technical ground truth).
+   2. Rebuild ArduCopter; waf's mavgen regenerates the C headers on its own.
+   3. Replace the venv's PyPI `pymavlink` with one generated from the edited
+      XML (§7 Gotchas), and assert both sides agree on the CRC-extra.
+   4. Add the `case` in `GCS_MAVLINK_Copter::handle_message()` with a body that
+      only emits a `GCS_SEND_TEXT`, plus the MAVProxy `motorfail` module. That
+      makes the round-trip visible in the telemetry pane — and gives Phase 5 a
+      function already proven reachable. **No motor behaviour yet.**
 4. **Phase 5** — resolve the motor-numbering question (§5 Technical ground truth), add the setter and the
    `rc_write()` check, rebuild. Verify motor N and only motor N goes to zero.
 5. **Phase 6** — fly, send `motorfail 3` in Stabilize, record takeoff → command →
@@ -540,8 +599,9 @@ itself is not version-controlled here (§3 Repo layout).
 
 ### Open questions
 
-- Does the supervisor accept a `MAV_CMD` as "a new MAVLink message"? Decided to
-  use one (§5 Technical ground truth); worth confirming, it is the only interpretive risk in the task.
+- ~~Does the supervisor accept a `MAV_CMD` as "a new MAVLink message"?~~
+  **Closed 2026-08-27** — moot. The project builds a genuine new message
+  (`MOTOR_FAILURE_SET`, id 11061), so the interpretive risk is gone.
 - ~~Why is Gazebo's RTF only 0.47?~~ **Answered 2026-08-27** — CPU-bound in DART at the world's 1 ms step (`gz sim` sits at ~240% CPU). The world already asks for `real_time_factor 1.0`, so nothing is throttling it. A 2 ms step reaches RTF ~0.97 but **breaks SITL's JSON link** — arming never completes — so the step stays at 1 ms and the video is re-timed in post instead.
 - Is a live GUI required for the demo, or is a recording acceptable? (§4 Environment)
 
@@ -551,6 +611,8 @@ itself is not version-controlled here (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | `set_mode` now retries (a single attempt raced the EKF and killed runs with "mode GUIDED not accepted"); added `CRUISE_SPEED`; documented every recording knob and the framing rules |
+| 2026-08-27 | Planned Phase 4 and purged the `MAV_CMD` assumption from §1 Mission, §5 Technical ground truth, §6 Decisions and §8 Next actions — the 2026-08-27 reversal had been recorded but not propagated. Fixed the landing point to `handle_message()`, confirmed id 11061 free, and established that a MAVProxy module is required, not optional |
 | 2026-08-27 | Restored `InteractiveViewControl` to the GUI configs (its absence froze the camera) and added `tune_camera.sh`, which leaves Gazebo open for setting an angle by hand |
 | 2026-08-27 | `TELEM=1` records a live MAVProxy pane beside Gazebo. Added `camera_pose.sh` and `CAM_POSE` for setting angles by hand, plus an elevated diagonal crash camera |
 | 2026-08-27 | Added `CAM_MODE` to `record_demo.sh` exposing Gazebo's five camera-tracking modes; `look_at` keeps the aircraft framed through the tumble. Fixed the RTF measurement to use a delta — now reports ~0.57 and writes a real-time cut |
@@ -714,3 +776,24 @@ is append-only** — unlike the rest of the file, history here *is* the value.
 - **Lesson:** when a requirement is explicit, a cheaper alternative is a
   suggestion, not a decision. Surface the trade-off and let the person holding
   the requirement choose; do not record the convenient option as settled.
+
+### 2026-08-27 — a reversal recorded in one place, left standing in six others
+
+- **Believed:** reversing the `MAV_CMD` decision was done. It was written up in
+  §5 Technical ground truth, struck through in §6 Decisions, logged in §10
+  Troubleshooting log and added to §9 Changelog — four places, which felt
+  thorough.
+- **Actually:** §6 Decisions still carried a *live* row asserting the opposite
+  ("Trigger is a new `MAV_CMD`, not a new message ID") two rows below the row
+  striking it out. §1 Mission still pointed at "why the trigger should be a
+  `MAV_CMD`". §5 Technical ground truth still said the Python side needed no
+  rebuild, still named `handle_command_int_packet()` as the landing point, and
+  still called the MAVProxy module "sugar, not a requirement" — the last two
+  being wrong in a way that would have cost real time in Phase 4. A new msgid is
+  dispatched by `msg.msgid` in `handle_message()`, and MAVProxy cannot send an
+  arbitrary message at all. Ruslan had to ask for the cleanup.
+- **Lesson:** a reversal is not applied until every line that *depended* on the
+  old choice is found, not just the line that stated it. Grep the whole file for
+  the rejected term before calling it done — the dangerous leftovers are the
+  downstream consequences, which do not mention the decision by name and read as
+  ordinary facts.

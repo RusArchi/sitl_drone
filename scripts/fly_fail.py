@@ -31,6 +31,7 @@ CONNECT = os.environ.get("CONNECT", "tcp:127.0.0.1:5760")
 TAKEOFF_ALT = float(os.environ.get("TAKEOFF_ALT", 12.0))   # metres
 CRUISE_N = float(os.environ.get("CRUISE_N", 18.0))         # metres north
 KILL_AFTER = float(os.environ.get("KILL_AFTER", 4.0))      # s into the cruise
+CRUISE_SPEED = float(os.environ.get("CRUISE_SPEED", 0))    # m/s, 0 = leave default
 MOTOR = int(os.environ.get("MOTOR", 1))   # 1 = front right (AP_MotorsMatrix.cpp:592)
 GUIDED = 4
 WALL_START = 0.0
@@ -74,17 +75,28 @@ def wait_ready(m, timeout=180):
     raise TimeoutError("no GPS fix")
 
 
-def set_mode(m, mode_id, name):
-    m.mav.set_mode_send(m.target_system,
-                        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                        mode_id)
-    deadline = time.time() + 10
+def set_mode(m, mode_id, name, timeout=60):
+    """Set a flight mode, retrying until it takes.
+
+    One attempt with a short deadline races the vehicle: the mode change is
+    rejected while the EKF is still settling and the run dies with "mode GUIDED
+    not accepted", which looks like a broken script rather than bad timing.
+    """
+    deadline = time.time() + timeout
+    attempt = 0
     while time.time() < deadline:
-        msg = m.recv_match(type="HEARTBEAT", blocking=True, timeout=2)
-        if msg and msg.custom_mode == mode_id:
-            log(f"mode -> {name}")
-            return True
-    raise TimeoutError(f"mode {name} not accepted")
+        attempt += 1
+        m.mav.set_mode_send(m.target_system,
+                            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                            mode_id)
+        end = time.time() + 5
+        while time.time() < end:
+            msg = m.recv_match(type="HEARTBEAT", blocking=True, timeout=1)
+            if msg and msg.custom_mode == mode_id:
+                log(f"mode -> {name}" + (f" (attempt {attempt})" if attempt > 1 else ""))
+                return True
+        log(f"  mode {name} not accepted yet; retrying")
+    raise TimeoutError(f"mode {name} not accepted after {timeout}s")
 
 
 def arm(m, timeout=90):
@@ -164,6 +176,13 @@ def main():
     first = m.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=10)
     if first:
         SIM_START = first.time_boot_ms
+
+    # WPNAV_SPEED is in cm/s and governs how fast GUIDED flies to a target. A
+    # slower cruise keeps the aircraft on screen longer and makes the departure
+    # easier to read on video.
+    if CRUISE_SPEED > 0:
+        log(f"cruise speed -> {CRUISE_SPEED} m/s")
+        set_param(m, "WPNAV_SPEED", CRUISE_SPEED * 100.0)
 
     wait_ready(m)
     set_mode(m, GUIDED, "GUIDED")
