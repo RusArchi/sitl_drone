@@ -148,6 +148,7 @@ Next action is Phase 3 (§8 Next actions).
 | [scripts/fly_fail.py](scripts/fly_fail.py) | Phase 3: straight-line cruise, then kill motor 1 via `SIM_ENGINE_FAIL`, log the fall |
 | [docker/gz/gui-crash.config](docker/gz/gui-crash.config) | Static side-on Gazebo camera for the failure run |
 | [docker/gz/gui-crash-close.config](docker/gz/gui-crash-close.config) | Closer static side-on variant (camera 20 m off the line, not 38 m) |
+| [scripts/tune_camera.sh](scripts/tune_camera.sh) | Open Gazebo and leave it open, for finding a camera angle by hand |
 | [scripts/camera_pose.sh](scripts/camera_pose.sh) | Print the live GUI camera pose as a paste-ready `<camera_pose>` |
 | [docker/gz/gui-crash-above.config](docker/gz/gui-crash-above.config) | Elevated diagonal camera over the crash zone |
 | [scripts/record_demo.sh](scripts/record_demo.sh) | Bring up Gazebo + SITL on a private Xvfb display, record the flight to `recordings/*.mp4` |
@@ -256,8 +257,11 @@ through the tumble, where plain `follow` loses it completely.
 
 ### Setting a camera angle by hand
 
-1. Bring the sim up with the GUI on the desktop and fly the view with the mouse:
-   `docker exec -e VISIBLE=1 -e FLIGHT=fly_fail.py sitl_drone /workspace/sitl_drone/scripts/record_demo.sh`
+1. From a terminal **on the machine's desktop**:
+   `docker exec -it sitl_drone /workspace/sitl_drone/scripts/tune_camera.sh`
+   This opens Gazebo and leaves it open. Do **not** use `record_demo.sh` for
+   this — it traps EXIT and kills Gazebo when the flight ends, so the window
+   disappears while you are still aiming it.
 2. `docker exec sitl_drone /workspace/sitl_drone/scripts/camera_pose.sh` prints the
    current pose, converted from Gazebo's quaternion into the `x y z roll pitch yaw`
    that `<camera_pose>` wants.
@@ -497,6 +501,13 @@ Do not rediscover these.
   horizon, where it disappears into the skyline at any distance.
 - **Narrowing `<horizontal_fov>` renders a blank grey scene** with no error
   logged. The telephoto approach to framing does not work in gz-gui 8.
+- **A custom `--gui-config` silently disables mouse camera control** unless it
+  includes `InteractiveViewControl`. The plugin draws no panel, so leaving it out
+  of a "minimal" config looks harmless — but orbit, pan and zoom all stop
+  working, which reads as a broken GUI rather than a missing plugin.
+- **`xdotool` cannot drive Gazebo's viewport on Xvfb.** Synthetic mouse events do
+  not reach the Qt render widget, so camera interaction cannot be verified
+  headlessly — the stock config ignores them exactly like a custom one does.
 
 Anticipated, not yet hit (Phases 4–5):
 
@@ -540,6 +551,7 @@ itself is not version-controlled here (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | Restored `InteractiveViewControl` to the GUI configs (its absence froze the camera) and added `tune_camera.sh`, which leaves Gazebo open for setting an angle by hand |
 | 2026-08-27 | `TELEM=1` records a live MAVProxy pane beside Gazebo. Added `camera_pose.sh` and `CAM_POSE` for setting angles by hand, plus an elevated diagonal crash camera |
 | 2026-08-27 | Added `CAM_MODE` to `record_demo.sh` exposing Gazebo's five camera-tracking modes; `look_at` keeps the aircraft framed through the tumble. Fixed the RTF measurement to use a delta — now reports ~0.57 and writes a real-time cut |
 | 2026-08-27 | Phase 3 done: `fly_fail.py` kills motor 1 in flight via `SIM_ENGINE_FAIL`, recorded. Reversed the `MAV_CMD` decision — the assignment requires a genuinely new message. Answered the RTF question and added post-hoc re-timing |
