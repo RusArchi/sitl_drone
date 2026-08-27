@@ -261,19 +261,36 @@ Everything is environment variables on `scripts/record_demo.sh`; nothing needs
 editing to change a flight or a shot.
 
 ```bash
+# Copy-paste as-is. Do NOT add trailing comments after the backslashes: a line
+# continuation must be the last character on the line, and a comment after it
+# breaks the command into fragments ("docker exec requires at least 2 arguments",
+# then "command not found: -e" for every remaining line).
 docker exec \
-  -e FLIGHT=fly_fail.py \        # fly_demo.py (square) or fly_fail.py (motor cut)
-  -e TELEM=1 \                   # add the MAVProxy pane; canvas becomes 1920x1080
-  -e CAM_POSE="3.7 12.2 4.6 0 0.41 -2.58" \   # x y z roll pitch yaw (radians)
-  -e TAKEOFF_ALT=4 \             # metres
-  -e CRUISE_N=-10 \              # metres NORTH; negative flies south
-  -e CRUISE_SPEED=2 \            # m/s (sets WPNAV_SPEED); 0 = ArduPilot default
-  -e KILL_AFTER=4 \              # seconds into the cruise before the motor is cut
-  -e MOTOR=1 \                   # 1-4, output-channel numbering; 1 = front right
-  -e CAM_MODE=static \           # static | track | follow | free_look | look_at
+  -e FLIGHT=fly_fail.py \
+  -e TELEM=1 \
+  -e CAM_POSE="3.7 12.2 4.6 0 0.41 -2.58" \
+  -e TAKEOFF_ALT=4 \
+  -e CRUISE_N=-10 \
+  -e CRUISE_SPEED=2 \
+  -e KILL_AFTER=4 \
+  -e MOTOR=1 \
+  -e CAM_MODE=static \
   -e GUI_CFG=/workspace/sitl_drone/docker/gz/gui-crash-above.config \
   sitl_drone /workspace/sitl_drone/scripts/record_demo.sh
 ```
+
+| Variable | Meaning |
+|---|---|
+| `FLIGHT` | `fly_demo.py` (square) or `fly_fail.py` (motor cut) |
+| `TELEM` | `1` adds the MAVProxy pane; canvas becomes 1920x1080 |
+| `CAM_POSE` | `x y z roll pitch yaw`, metres and **radians** |
+| `TAKEOFF_ALT` | metres |
+| `CRUISE_N` | metres north; **negative flies south** |
+| `CRUISE_SPEED` | m/s (sets `WPNAV_SPEED`); `0` = ArduPilot default |
+| `KILL_AFTER` | seconds into the cruise before the motor is cut |
+| `MOTOR` | 1-4, output-channel numbering; 1 = front right |
+| `CAM_MODE` | `static` \| `track` \| `follow` \| `free_look` \| `look_at` |
+| `GUI_CFG` | which `docker/gz/*.config` to render with |
 
 Output lands in `recordings/`: a wall-clock capture and a `-realtime` cut
 re-timed by the measured RTF.
