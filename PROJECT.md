@@ -270,7 +270,7 @@ docker exec \
   -e TELEM=1 \
   -e CAM_POSE="3.7 12.2 4.6 0 0.41 -2.58" \
   -e TAKEOFF_ALT=4 \
-  -e CRUISE_N=-10 \
+  -e CRUISE_N=10 \
   -e CRUISE_SPEED=2 \
   -e KILL_AFTER=4 \
   -e MOTOR=1 \
@@ -296,12 +296,18 @@ Each run gets its own directory, `recordings/<flight>-<timestamp>/`:
 
 | File | What it is |
 |---|---|
-| `video.mp4` | wall-clock capture |
-| `video-realtime.mp4` | the same, re-timed by the measured RTF |
-| `run.txt` | every parameter the run was given, plus start/finish times |
-| `flight.log` | the flight script's own output |
-| `mavproxy.log` | the full MAVProxy session (only with `TELEM=1`) |
-| `sitl.log`, `gz_sim.log`, `ArduCopter.log` | copied out of `/tmp` on the way out |
+Every file carries the run id, so a video sent on its own is still identifiable:
+
+| File | Written by | Contents |
+|---|---|---|
+| `<id>.mp4` | `ffmpeg` capturing the Xvfb framebuffer | wall-clock video |
+| `<id>-realtime.mp4` | `ffmpeg` re-encode | the same, re-timed by the measured RTF |
+| `<id>-run.txt` | `record_demo.sh` | every parameter the run was given, plus start/finish times |
+| `<id>-flight.log` | `scripts/fly_*.py` stdout | our own script: params set, takeoff, the motor cut, the fall |
+| `<id>-mavproxy.log` | MAVProxy session | what the *vehicle* said — `AP:` messages, `COMMAND_ACK`s (only with `TELEM=1`) |
+| `<id>-sitl.log` | `sim_vehicle.py` | waf build output and SITL launch |
+| `<id>-ArduCopter.log` | the `arducopter` binary | flight-controller console: JSON link setup, EKF, physics backend |
+| `<id>-gz_sim.log` | `gz sim` | Gazebo warnings, plugin loading, SDF parse messages |
 
 The logs used to be written to `/tmp` and overwritten by the next run, so a
 recording could not be explained afterwards. `run.txt` is written before
@@ -312,8 +318,9 @@ anything can fail, so even an aborted run says what it was.
 - **World axes:** `+X` is north, `+Y` is east, `+Z` is up. Camera `yaw 0` looks
   along `+X`; `+pitch` looks **down**. The Gazebo origin grid spans about ±10 m,
   so "where the grid ends" is roughly 10 m out.
-- **Fly toward where the camera is pointing.** A camera aimed south-west sees
-  nothing of a flight heading north — use a negative `CRUISE_N`.
+- **Fly toward where the camera is pointing.** `CRUISE_N` is positive-north and
+  negative-south; which one keeps the aircraft on screen depends entirely on the
+  camera's yaw. Check against the pose you are using rather than assuming.
 - **A downward-pitched camera cannot see an aircraft above it.** With the camera
   at 4.6 m and a 8 m cruise, the aircraft sits above the top of frame. Either fly
   below the camera height or raise the camera.
