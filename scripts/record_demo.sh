@@ -32,7 +32,13 @@ FPS="${FPS:-15}"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 
-W=1280; H=800
+# TELEM=1 widens the canvas and puts a MAVProxy terminal beside Gazebo, so one
+# recording shows the aircraft AND the telemetry/commands driving it.
+if [[ "${TELEM:-0}" == "1" ]]; then
+    W=1920; H=1080; GZ_W=1280; GZ_H=1080
+else
+    W=1280; H=800;  GZ_W=1280; GZ_H=800
+fi
 mkdir -p "$OUT_DIR"
 
 if [[ "${VISIBLE:-0}" == "1" ]]; then
@@ -55,6 +61,7 @@ cleanup() {
     pkill -f 'bin/arducopter' 2>/dev/null || true
     pkill -f 'gz sim' 2>/dev/null || true
     pkill -f 'gz-sim'  2>/dev/null || true
+    pkill -f 'mavproxy.py' 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -86,9 +93,9 @@ done
 [[ -n "$WIN" ]] || { echo "Gazebo window never appeared; see /tmp/gz_sim.log" >&2; exit 1; }
 
 # Put it at a known place and size so the capture geometry is deterministic.
-xdotool windowmove "$WIN" 0 0 windowsize "$WIN" "$W" "$H" windowactivate "$WIN" || true
+xdotool windowmove "$WIN" 0 0 windowsize "$WIN" "$GZ_W" "$GZ_H" windowactivate "$WIN" || true
 sleep 3
-log "gazebo window $WIN at 0,0 ${W}x${H}"
+log "gazebo window $WIN at 0,0 ${GZ_W}x${GZ_H}"
 
 # --------------------------------------------------------------------- sitl
 log "starting ArduCopter SITL"
@@ -105,6 +112,34 @@ for _ in $(seq 1 90); do
     sleep 1
 done
 sleep 5
+
+# ------------------------------------------------------------------ telemetry
+# MAVProxy attaches to a SPARE SITL port. 5760 belongs to the flight script -- two
+# clients on one TCP port fight over the stream. SITL advertises 5762 and 5763 for
+# SERIAL1/SERIAL2, but only 5763 actually accepts connections here (5762 refuses),
+# so that is the default. MAVProxy prints every STATUSTEXT the vehicle emits and
+# accepts typed commands, which is what makes the custom-message demo legible.
+if [[ "${TELEM:-0}" == "1" ]]; then
+    log "starting MAVProxy telemetry pane"
+    setsid xterm -geometry 78x62+1280+0 -fa Monospace -fs 9 \
+        -bg black -fg green -title "MAVProxy telemetry" \
+        -e bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && \
+            mavproxy.py --master tcp:127.0.0.1:${TELEM_PORT:-5763} --force-connected" \
+        >/tmp/mavproxy.log 2>&1 &
+    # MAVProxy takes a while to connect and draw; poll rather than sleeping once.
+    TWIN=""
+    for _ in $(seq 1 20); do
+        TWIN="$(xdotool search --name 'MAVProxy telemetry' 2>/dev/null | tail -1 || true)"
+        [[ -n "$TWIN" ]] && break
+        sleep 1
+    done
+    if [[ -n "$TWIN" ]]; then
+        xdotool windowmove "$TWIN" "$GZ_W" 0 2>/dev/null || true
+        log "  telemetry pane at ${GZ_W},0"
+    else
+        log "  telemetry pane did not appear (see /tmp/mavproxy.log)"
+    fi
+fi
 
 # ---------------------------------------------------------------- recording
 if [[ "${VISIBLE:-0}" == "1" ]]; then

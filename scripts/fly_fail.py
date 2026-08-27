@@ -87,12 +87,36 @@ def set_mode(m, mode_id, name):
     raise TimeoutError(f"mode {name} not accepted")
 
 
-def arm(m):
-    m.mav.command_long_send(m.target_system, m.target_component,
-                            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                            0, 1, 0, 0, 0, 0, 0, 0)
-    m.motors_armed_wait()
-    log("armed")
+def arm(m, timeout=90):
+    """Arm, retrying until it takes.
+
+    One arm command plus motors_armed_wait() is a trap: if the single attempt is
+    rejected because the EKF has not finished settling, motors_armed_wait()
+    blocks forever with no timeout and no second attempt, and the script hangs
+    with no indication of why. Retry and report what the vehicle says.
+    """
+    deadline = time.time() + timeout
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        m.mav.command_long_send(m.target_system, m.target_component,
+                                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                                0, 1, 0, 0, 0, 0, 0, 0)
+        end = time.time() + 5
+        while time.time() < end:
+            msg = m.recv_match(type=["HEARTBEAT", "COMMAND_ACK", "STATUSTEXT"],
+                               blocking=True, timeout=1)
+            if not msg:
+                continue
+            t = msg.get_type()
+            if t == "STATUSTEXT" and ("PreArm" in msg.text or "Arm" in msg.text):
+                log(f"  vehicle: {msg.text}")
+            elif t == "HEARTBEAT" and (msg.base_mode &
+                                       mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED):
+                log(f"armed (attempt {attempt})")
+                return
+        log(f"  arm attempt {attempt} did not take; retrying")
+    raise TimeoutError("could not arm")
 
 
 def takeoff(m, alt):
