@@ -7,7 +7,7 @@
 >
 > Update rules: see [CLAUDE.md](CLAUDE.md).
 
-**Last updated:** 2026-08-27
+**Last updated:** 2026-08-29
 **Branch:** `claude/ardupilot-motor-control-gazebo-84hfq8`
 **Upstream:** https://github.com/RusArchi/sitl_drone
 
@@ -75,7 +75,7 @@ the new message reserves a `failure_type` field it does not yet use.
 | 1 | Provision the build/sim environment | **Done** |
 | 2 | ArduCopter SITL flying an iris quad in Gazebo, with visualisation | **Done** 2026-08-26 |
 | 3 | Baseline: kill a rotor with `SIM_ENGINE_FAIL` (no code change) | **Done** 2026-08-27 |
-| 4 | Define the new message in `ardupilotmega.xml`; rebuild ArduCopter **and** pymavlink; prove round-trip | **Not started** |
+| 4 | Define the new message in `ardupilotmega.xml`; rebuild ArduCopter **and** pymavlink; prove round-trip | **In progress** — XML done 2026-08-29 |
 | 5 | Handle it in Copter; propagate motor index down to the ESC output | **Not started** |
 | 6 | Send from MAVProxy in flight; record takeoff → command → crash | **Not started** |
 
@@ -85,6 +85,36 @@ patch exists, so a later failure can be attributed to the patch rather than the
 environment.
 
 ## 2. Current status
+
+**Phase 4 in progress — the message is defined; nothing is built against it yet.**
+
+`MOTOR_FAILURE_SET` (id 11070) and the `MOTOR_FAILURE_TYPE` enum were added to
+`ardupilotmega.xml` on 2026-08-29 — 16 lines, hand-written by Ruslan, the whole
+protocol change. Verified by running mavgen over the edited dialect: it generates
+cleanly, the field binds to the enum, and the message is 4 bytes with
+**CRC-extra 97**. Captured as `patches/mavlink.patch` and the patch round-trip
+tested (stash → apply → identical diff).
+
+Nothing is compiled against it yet. Steps 2–4 of Phase 4 — waf build, pymavlink
+reinstall, `handle_message()` case and the MAVProxy module — are open
+(§8 Next actions).
+
+### Resuming in a new session — read this first
+
+The XML edit lives in `~/ardupilot/modules/mavlink`, a git submodule that **this
+repo does not track**, and it is uncommitted there. Before doing anything else:
+
+```bash
+grep -c MOTOR_FAILURE ~/ardupilot/modules/mavlink/message_definitions/v1.0/ardupilotmega.xml
+```
+
+- **5** — the edit is present, carry on at §8 Next actions step 2.
+- **0** — the tree was reset or the submodule updated. Restore it with
+  `./scripts/apply_patches.sh`, then check again.
+
+Then bring the sim up in the order below (Gazebo first), and note the build has
+**not** been run since the XML changed, so `arducopter` in the container still
+predates the new message.
 
 **Phase 3 complete — a motor failure drops the aircraft, on video, with no code changes.**
 
@@ -153,6 +183,10 @@ Next action is Phase 4 (§8 Next actions).
 | [docker/gz/gui-crash-above.config](docker/gz/gui-crash-above.config) | Elevated diagonal camera over the crash zone |
 | [scripts/record_demo.sh](scripts/record_demo.sh) | Bring up Gazebo + SITL on a private Xvfb display, record the flight to `recordings/*.mp4` |
 | [docker/gz/gui-record.config](docker/gz/gui-record.config) | Minimal Gazebo GUI for recording — 3D view only, no docked panels |
+| [scripts/make_patches.sh](scripts/make_patches.sh) | Capture the ArduPilot-tree changes into `patches/`; run after any edit there |
+| [scripts/apply_patches.sh](scripts/apply_patches.sh) | Re-apply `patches/` to the ArduPilot tree after a fresh clone or a wiped submodule |
+| `patches/mavlink.patch` | The `ardupilotmega.xml` change — `MOTOR_FAILURE_SET` + `MOTOR_FAILURE_TYPE` |
+| `patches/BASE` | The two commits the patches were made against, so they can be rebased knowingly |
 | [scripts/setup_env.sh](scripts/setup_env.sh) | Host provisioner; `--check` verifies without changing anything |
 | [scripts/fly_demo.py](scripts/fly_demo.py) | Phase 2 smoke flight: arm, take off, fly a square, land. Scripted, no sticks |
 | [docker/Dockerfile](docker/Dockerfile) | Reproducible Ubuntu 24.04 build/sim image |
@@ -388,7 +422,7 @@ The signal path the assignment asks for, end to end:
 
 | # | Link in the chain | Where |
 |---|---|---|
-| 1 | New `<message>` definition, id **11061** | `modules/mavlink/message_definitions/v1.0/ardupilotmega.xml`, in the `<messages>` block |
+| 1 | New `<message>` id **11070** + `MOTOR_FAILURE_TYPE` enum | `modules/mavlink/message_definitions/v1.0/ardupilotmega.xml`. **Done 2026-08-29** |
 | 2 | C headers | regenerated automatically by waf's `mavgen` task (`Tools/ardupilotwaf/mavgen.py`) — editing the XML and rebuilding is enough |
 | 3 | Python side (MAVProxy / script) | **rebuild required** — a new msgid changes the wire format, so the venv's PyPI `pymavlink` must be replaced by one generated from the edited XML (§7 Gotchas) |
 | 4 | Copter receives it | `ArduCopter/GCS_MAVLink_Copter.cpp:1179` `GCS_MAVLINK_Copter::handle_message()` — add a `case` to the `msg.msgid` switch, as `SET_ATTITUDE_TARGET` does at line 1184. Unhandled ids fall through to the base class and are **silently dropped** |
@@ -402,24 +436,55 @@ genuine final ESC command that the stability patch cannot rescale. This is the
 "command to the ESC drivers" the assignment names, and it is identical on real
 hardware — which is the point.
 
-**Message definition (step 1).** Add a `<message>` to the `<messages>` block of
-`ardupilotmega.xml`. Verified 2026-08-27 against `cbe0c39`: the highest id in the
-whole dialect tree's ArduPilot range is **11060** (`NAMED_VALUE_STRING`), and
-**11061 is free** across every included XML. Proposed shape:
+**Message definition (step 1) — DONE 2026-08-29.** This is what is in the file,
+not a proposal. `MOTOR_FAILURE_TYPE` sits at the end of the `<enums>` block,
+`MOTOR_FAILURE_SET` at the end of `<messages>`:
 
 ```xml
-<message id="11061" name="MOTOR_FAILURE_SET">
-  <field type="uint8_t" name="target_system">System ID</field>
-  <field type="uint8_t" name="target_component">Component ID</field>
-  <field type="uint8_t" name="motor">Motor to fail, 1-4, output-channel convention (SERVOn)</field>
-  <field type="uint8_t" name="failure_type">0 = restore, 1 = hard stop</field>
+<enum name="MOTOR_FAILURE_TYPE">
+  <description>Type of failure to inject on a motor output.</description>
+  <entry name="MOTOR_FAILURE_TYPE_NONE" value="0">
+    <description>Restore normal output.</description>
+  </entry>
+  <entry name="MOTOR_FAILURE_TYPE_STOPPED" value="1">
+    <description>Force the output to zero.</description>
+  </entry>
+</enum>
+
+<message id="11070" name="MOTOR_FAILURE_SET">
+  <description>Fail and stop the chosen single motor (zero the speed command to ESC)</description>
+  <field type="uint8_t" name="target_system">System ID.</field>
+  <field type="uint8_t" name="target_component">Component ID.</field>
+  <field type="uint8_t" name="motor">Motor to fail, 1 to 4, matching SERVO1 to SERVO4</field>
+  <field type="uint8_t" name="failure_type" enum="MOTOR_FAILURE_TYPE">Motor stopped or restored</field>
 </message>
 ```
 
-`target_system`/`target_component` because every ArduPilot handler routes on them;
-omitting them is exactly the sort of shortcut this exercise is about. `failure_type`
-is reserved for partial-thrust failures once the three-motor recovery work starts
-(§1 Mission) — it carries only `0`/`1` for now.
+Generated properties, measured not assumed: **4-byte payload, CRC-extra 97**.
+Both numbers are the check for step 3 — the C build and pymavlink must agree on
+them or the message is silently dropped (§7 Gotchas).
+
+**Why id 11070 and not 11061.** 11061 was the first free number, but the file
+leaves gaps between families deliberately — `ESC_TELEMETRY_1_TO_4` took 11030 and
+its four later siblings landed at 11040–11044 because the room was there.
+11070 starts a clean block instead of crowding `NAMED_VALUE_STRING` at 11060.
+Note this is a **local** allocation: upstream ArduPilot does not know about it,
+so a vehicle on upstream firmware would not agree what 11070 means.
+
+**Why `motor` is a plain `uint8_t` and not a position enum.** FR/FL/RR/RL only
+maps cleanly on a quad **X**. On a quad plus the same four outputs are
+front/right/back/left; on a hexa or octa the names run out. Encoding a frame
+assumption in the wire format would be locked in by the protocol — bad for the
+three-motor recovery goal (§1 Mission). Nothing in MAVLink does this: there is no
+`FRONT_RIGHT` in any of the nineteen dialect files, and the one motor-related
+enum, `MOTOR_TEST_ORDER` in `common.xml`, is about test sequencing. Friendly
+names belong in the MAVProxy module, translating `fr` → `1` before sending.
+
+**Why `failure_type` is an enum and not a boolean.** MAVLink has no `bool` wire
+type at all — booleans are `uint8_t` carrying 0/1, and `common.xml` provides
+`MAV_BOOL` for the convention. Not used here because `failure_type` needs a third
+value (partial thrust) as soon as the recovery work starts, and a field
+documented as a boolean cannot grow one without breaking readers.
 
 **New message vs. new `MAV_CMD` — use a NEW MESSAGE.** Decided 2026-08-27,
 reversing the 2026-08-25 choice of `MAV_CMD`. The assignment says "create a new
@@ -490,7 +555,10 @@ comparison baseline for the commanded kill built in Phases 4–5.
 | Kill at `rc_write()`, not in `output_armed_stabilizing()` | Downstream of the stability patch, so the mixer can't compensate the zero away |
 | ~~`MOT_KILL_MASK` bitmask param, not a new MAVLink message~~ **Reversed 2026-08-25** | The assignment requires a new MAVLink message carrying a motor index 1–4. The protocol work *is* the exercise, not overhead to be avoided |
 | ~~Use a `MAV_CMD` rather than a new message id~~ **Reversed 2026-08-27** | Chosen for the free `COMMAND_ACK` and zero pymavlink rebuild. But a `MAV_CMD` is a value inside `COMMAND_LONG`, not a new message, and the assignment asks for a new message. Requirement beats convenience. Cost: pymavlink **must** be regenerated, since a new message id changes the wire format and CRC-extra |
-| Message id **11061** in `ardupilotmega.xml`, named `MOTOR_FAILURE_SET` | First free id above ArduPilot's highest in-use 11060; verified free across the whole dialect tree at `cbe0c39`. Defined in `ardupilotmega.xml` rather than a private dialect because that is what waf's mavgen and MAVProxy already load by default — no dialect plumbing to get wrong (§5 Technical ground truth) |
+| Message `MOTOR_FAILURE_SET`, id **11070**, in `ardupilotmega.xml` | Defined in `ardupilotmega.xml` rather than a private dialect because that is what waf's mavgen and MAVProxy already load — no dialect plumbing to get wrong. 11070 rather than the first-free 11061 because the file leaves gaps between message families on purpose, so a new message starts a clean block instead of crowding `NAMED_VALUE_STRING` at 11060. Locally allocated — upstream does not know it (§5 Technical ground truth) |
+| `motor` is a plain `uint8_t` output channel, not an FR/FL/RR/RL enum | Position names only map on a quad X and run out on a hexa/octa. A frame assumption in the wire format would be locked in by the protocol, which is wrong for the three-motor goal. Friendly names go in the MAVProxy module instead (§5 Technical ground truth) |
+| `failure_type` is a `MOTOR_FAILURE_TYPE` enum, not a boolean | MAVLink has no `bool` wire type, and `MAV_BOOL` would not survive adding partial thrust as a third value (§5 Technical ground truth) |
+| ArduPilot-tree changes mirrored as `patches/`, regenerated by a script | `modules/mavlink` is a submodule on a detached HEAD that this repo does not track; `git submodule update` discards uncommitted work there without warning. Round-trip tested 2026-08-29 (§3 Repo layout) |
 | A custom MAVProxy `motorfail` module is required, not optional | MAVProxy can only send an arbitrary `COMMAND_LONG` (`long`), never an arbitrary message. With a real message id there is no other way to send it from a MAVProxy terminal, which the assignment requires. Reverses the earlier "sugar, not a requirement" note (§5 Technical ground truth) |
 | Land the message in `handle_message()`, not a command handler | A new message id is dispatched by `msg.msgid`, not through `COMMAND_LONG`. Unhandled ids fall through to `GCS_MAVLINK::handle_message()` and vanish without a word, so the `case` is what makes receipt observable at all (§5 Technical ground truth) |
 | Kill one motor by index (1–4), not a bitmask | Matches the assignment's payload. A bitmask is a superset and can come later if useful |
@@ -598,6 +666,21 @@ Do not rediscover these.
   not reach the Qt render widget, so camera interaction cannot be verified
   headlessly — the stock config ignores them exactly like a custom one does.
 
+- **The MAVLink XML schema validator fails on the pristine file.** `mavgen` with
+  validation on rejects `ardupilotmega.xml` at the `<superseded>` element in
+  message `RADIO` (id 166) — `SCHEMAV_ELEMENT_CONTENT`. Verified 2026-08-29 on
+  the unmodified file, so it is **not** caused by local edits. waf builds fine.
+  When hand-running mavgen to check an edit, pass `validate=False` or the error
+  looks like your fault.
+- **A backslash in a `<description>` becomes an escape sequence.** mavgen puts
+  descriptions verbatim into Python `"""docstrings"""`, so `stopped\restored`
+  produced a real carriage return (0x0d) in the generated help text. Use `/` or
+  a word.
+- **XML indentation in the dialect files is convention, not schema** — nothing
+  will ever error on it. `ardupilotmega.xml` uses **2 spaces per nesting level**:
+  2 for `<enums>`/`<messages>`, 4 for `<enum>`/`<message>`, 6 for
+  `<entry>`/`<field>`, 8 for a `<description>` inside an entry.
+
 Anticipated, not yet hit (Phases 4–5):
 
 - **pymavlink will not know the new message.** The venv's pymavlink comes from
@@ -616,28 +699,73 @@ Anticipated, not yet hit (Phases 4–5):
 1. ~~**Phase 2**~~ — done 2026-08-26, see §2 Current status.
 2. **Phase 3** — `param set SIM_ENGINE_FAIL 2` + `param set SIM_ENGINE_MUL 0` in
    flight. Confirm the sim stack reacts. Baseline recorded.
-3. **Phase 4** — four steps, in order:
-   1. Add `MOTOR_FAILURE_SET` (id 11061) to `ardupilotmega.xml` (§5 Technical ground truth).
-   2. Rebuild ArduCopter; waf's mavgen regenerates the C headers on its own.
-   3. Replace the venv's PyPI `pymavlink` with one generated from the edited
-      XML (§7 Gotchas), and assert both sides agree on the CRC-extra.
-   4. Add the `case` in `GCS_MAVLINK_Copter::handle_message()` with a body that
-      only emits a `GCS_SEND_TEXT`, plus the MAVProxy `motorfail` module. That
-      makes the round-trip visible in the telemetry pane — and gives Phase 5 a
-      function already proven reachable. **No motor behaviour yet.**
+3. **Phase 4** — four steps, in order. Each is separately verifiable on purpose:
+   the characteristic failure here is *silent*, so testing only at the end leaves
+   four possible causes instead of one.
+
+   1. ~~Add `MOTOR_FAILURE_SET` + `MOTOR_FAILURE_TYPE` to `ardupilotmega.xml`~~
+      **Done 2026-08-29** (§5 Technical ground truth). Captured in `patches/`.
+
+   2. **Generate the C headers.** waf runs mavgen as part of the build, so this
+      is just a build — but to watch mavgen on its own first, generate into a
+      scratch directory and read what it writes:
+
+      ```bash
+      docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && \
+        python3 -m pymavlink.tools.mavgen --lang=C --wire-protocol=2.0 \
+          --validate=False -o /tmp/hdr \
+          ~/ardupilot/modules/mavlink/message_definitions/v1.0/ardupilotmega.xml'
+      ```
+
+      `--validate=False` is required: the schema validator fails on the
+      **pristine** file, not because of local edits (§7 Gotchas).
+
+      Then the real build:
+
+      ```bash
+      docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && \
+        cd ~/ardupilot && ./waf copter'
+      ```
+
+      **Verify:** `MAVLINK_MSG_ID_MOTOR_FAILURE_SET 11070` and `..._CRC 97` in
+      `build/sitl/libraries/GCS_MAVLink/include/mavlink/v2.0/ardupilotmega/mavlink_msg_motor_failure_set.h`.
+
+   3. **Regenerate pymavlink into the venv**, replacing the PyPI copy:
+
+      ```bash
+      docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && \
+        MAVLINK_DIALECT=ardupilotmega pip install --force-reinstall \
+          ~/ardupilot/modules/mavlink/pymavlink'
+      ```
+
+      `setup.py` copies the XML out of `../message_definitions` and runs mavgen at
+      install time, so it picks the edit up on its own. `MAVLINK_DIALECT` narrows
+      generation to one dialect instead of all nineteen, twice each.
+
+      **Verify — the step that actually matters:** Python's `crc_extra` for 11070
+      must equal the C `_CRC` define. Both must read **97**. If they differ,
+      everything downstream compiles, runs, looks correct and does nothing.
+
+   4. **Make receipt visible.** A `case` in `GCS_MAVLINK_Copter::handle_message()`
+      whose body is only a `GCS_SEND_TEXT`, plus a `motorfail` MAVProxy module
+      kept in this repo (`load_module()` tries `MAVProxy.modules.mavproxy_<name>`
+      then plain `<name>`, so a file on `PYTHONPATH` works — nothing to write
+      into site-packages). **Verify:** type `motorfail 3`, see the text come
+      back. **No motor behaviour yet.**
 4. **Phase 5** — resolve the motor-numbering question (§5 Technical ground truth), add the setter and the
    `rc_write()` check, rebuild. Verify motor N and only motor N goes to zero.
 5. **Phase 6** — fly, send `motorfail 3` in Stabilize, record takeoff → command →
    crash. Log `RATE`, `ATT`, `MOTB`, `RCOU`; keep the video and the `.bin`.
 
-Keep the ArduPilot changes as a tracked patch in this repo — the ArduPilot tree
-itself is not version-controlled here (§3 Repo layout).
+Run `scripts/make_patches.sh` after **every** edit to the ArduPilot tree — that
+tree is not version-controlled here, and its `modules/mavlink` submodule can be
+wiped by a `git submodule update` without warning (§3 Repo layout).
 
 ### Open questions
 
 - ~~Does the supervisor accept a `MAV_CMD` as "a new MAVLink message"?~~
   **Closed 2026-08-27** — moot. The project builds a genuine new message
-  (`MOTOR_FAILURE_SET`, id 11061), so the interpretive risk is gone.
+  (`MOTOR_FAILURE_SET`, id 11070), so the interpretive risk is gone.
 - ~~Why is Gazebo's RTF only 0.47?~~ **Answered 2026-08-27** — CPU-bound in DART at the world's 1 ms step (`gz sim` sits at ~240% CPU). The world already asks for `real_time_factor 1.0`, so nothing is throttling it. A 2 ms step reaches RTF ~0.97 but **breaks SITL's JSON link** — arming never completes — so the step stays at 1 ms and the video is re-timed in post instead.
 - Is a live GUI required for the demo, or is a recording acceptable? (§4 Environment)
 
@@ -647,6 +775,8 @@ itself is not version-controlled here (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-29 | **Phase 4 step 1 done** — `MOTOR_FAILURE_SET` (id 11070) and the `MOTOR_FAILURE_TYPE` enum added to `ardupilotmega.xml` by hand; 4-byte payload, CRC-extra 97, verified by running mavgen over the edited dialect. Added `patches/` with `make_patches.sh` / `apply_patches.sh`, round-trip tested. Recorded three new §7 Gotchas: the validator fails on the pristine file, a backslash in a `<description>` becomes an escape, and the indentation convention |
+| 2026-08-28 | Added §11 Glossary — one table defining the MAVLink, ArduPilot and Gazebo terms this file uses, so they are not re-explained inline. Placed at the end to avoid renumbering 43 cross-references |
 | 2026-08-27 | Each recording is now a self-contained directory — video, real-time cut, `run.txt` manifest, flight/MAVProxy/SITL/Gazebo logs |
 | 2026-08-27 | `set_mode` now retries (a single attempt raced the EKF and killed runs with "mode GUIDED not accepted"); added `CRUISE_SPEED`; documented every recording knob and the framing rules |
 | 2026-08-27 | Planned Phase 4 and purged the `MAV_CMD` assumption from §1 Mission, §5 Technical ground truth, §6 Decisions and §8 Next actions — the 2026-08-27 reversal had been recorded but not propagated. Fixed the landing point to `handle_message()`, confirmed id 11061 free, and established that a MAVProxy module is required, not optional |
@@ -834,3 +964,30 @@ is append-only** — unlike the rest of the file, history here *is* the value.
   the rejected term before calling it done — the dangerous leftovers are the
   downstream consequences, which do not mention the decision by name and read as
   ordinary facts.
+
+---
+
+## 11. Glossary
+
+Terms used throughout this file. **All of these are real vocabulary** — from
+MAVLink, ArduPilot or Gazebo — not descriptions invented here. If an explanation
+elsewhere in this file uses a word that is not in this table and not in the code,
+it is a paraphrase and should be treated as such.
+
+| Term | Meaning | Where it lives |
+|---|---|---|
+| **Dialect** | One XML file defining MAVLink messages. Dialects include each other: `ardupilotmega.xml` includes `common.xml`, which includes `minimal.xml`. ArduPilot builds `ardupilotmega`, so it gets all three | `modules/mavlink/message_definitions/v1.0/` |
+| **msgid** | The message's number on the wire. `HEARTBEAT` is 0; ours is 11070. Distinct from a `MAV_CMD` value, which is a number *inside* `COMMAND_LONG` and not a message at all | `<message id="…">` |
+| **CRC-extra** | A checksum byte derived from a message's name, field types and field order, mixed into every packet. Two builds generated from different XML disagree on it, and the receiver **drops the packet silently**. The Phase 4 trap (§7 Gotchas) | generated `_CRC` define |
+| **mavgen** | MAVLink's code generator. Turns the XML into C headers and Python modules. Run by waf for C, by `pip install` for pymavlink | `Tools/ardupilotwaf/mavgen.py` |
+| **pymavlink** | The Python MAVLink library. The venv's copy is from PyPI and knows nothing of local XML edits until reinstalled from `modules/mavlink/pymavlink` | `venv-ardupilot/…/pymavlink` |
+| **SITL** | Software In The Loop — ArduPilot's real flight code compiled for the PC, with simulated sensors instead of hardware | `libraries/AP_HAL_SITL/` |
+| **Mixer** | The step turning one roll/pitch/yaw/thrust demand into four per-motor thrusts, using the frame's motor table | `AP_MotorsMatrix::output_armed_stabilizing()` |
+| **Stability patch** | The mixer's rescaling when a demand cannot be met — it trades thrust for attitude control. Why the motor kill goes *downstream* of it (§6 Decisions) | same function |
+| **Spool state** | The armed/disarmed ramp — ground idle, spooling up, throttle unlimited. Motors do not jump to a commanded value | `AP_MotorsMulticopter` |
+| **Thrust linearisation** | Correcting for thrust rising roughly with the *square* of motor speed, so a 50% demand gives 50% thrust rather than 25% | `AP_MotorsMulticopter` |
+| **`rc_write()`** | The last line of flight code to touch a motor output before it becomes PWM. The kill injection point (§5 Technical ground truth) | `AP_Motors_Class.cpp:96` |
+| **PWM** | The pulse width, ~1000–2000 µs, that a real ESC reads as a throttle command. What SITL ships to Gazebo instead of a wire | `SITL_State.cpp` |
+| **Motor index vs. test order** | Two different 1–4 numberings. This project uses the **output-channel** one (1–4 → `SERVO1`–`SERVO4`). They agree only for motor 1 (§5 Technical ground truth) | `AP_MotorsMatrix.cpp:592` |
+| **JSON backend** | The UDP link carrying servo outputs to Gazebo and vehicle state back. Ports 9002/9003 (§4 Environment) | `--model JSON` |
+| **RTF** | Real-time factor. Gazebo's sim-seconds per wall-second; 0.47 here, and physics-bound (§4 Environment) | Gazebo |

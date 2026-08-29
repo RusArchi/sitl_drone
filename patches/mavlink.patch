@@ -1,0 +1,33 @@
+diff --git a/message_definitions/v1.0/ardupilotmega.xml b/message_definitions/v1.0/ardupilotmega.xml
+index adc52544..488dfd39 100644
+--- a/message_definitions/v1.0/ardupilotmega.xml
++++ b/message_definitions/v1.0/ardupilotmega.xml
+@@ -1348,6 +1348,15 @@
+       <entry value="2" name="OSD_PARAM_INVALID_PARAMETER_INDEX"/>
+       <entry value="3" name="OSD_PARAM_INVALID_PARAMETER"/>
+     </enum>
++    <enum name="MOTOR_FAILURE_TYPE">
++      <description>Type of failure to inject on a motor output.</description>
++      <entry name="MOTOR_FAILURE_TYPE_NONE" value="0">
++        <description>Restore normal output.</description>
++      </entry>
++      <entry name="MOTOR_FAILURE_TYPE_STOPPED" value="1">
++        <description>Force the output to zero.</description>
++      </entry>
++    </enum>
+   </enums>
+   <messages>
+     <message id="150" name="SENSOR_OFFSETS">
+@@ -2067,5 +2076,12 @@
+       <field type="char[10]" name="name" instance="true">Name of the debug variable</field>
+       <field type="char[64]" name="value">Value of the debug variable</field>
+     </message>
++    <message id="11070" name="MOTOR_FAILURE_SET">
++      <description>Fail and stop the chosen single motor (zero the speed command to ESC)</description>
++      <field type="uint8_t" name="target_system">System ID.</field>
++      <field type="uint8_t" name="target_component">Component ID.</field>
++      <field type="uint8_t" name="motor">Motor to fail, 1 to 4, matching SERVO1 to SERVO4</field>
++      <field type="uint8_t" name="failure_type" enum="MOTOR_FAILURE_TYPE">Motor stopped or restored</field>
++    </message>
+   </messages>
+ </mavlink>
