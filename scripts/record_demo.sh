@@ -42,12 +42,25 @@ FPS="${FPS:-15}"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 
-# TELEM=1 widens the canvas and puts a MAVProxy terminal beside Gazebo, so one
-# recording shows the aircraft AND the telemetry/commands driving it.
+# Canvas size. RES sets the render resolution, e.g. RES=2560x1440 or RES=3840x2160.
+#
+# Rendering is software (llvmpipe -- the desktop is NVIDIA-driven and Mesa cannot
+# use it, see §4 Environment), so resolution is paid for in CPU by both Gazebo and
+# the x264 encoder, and Gazebo is already CPU-bound at RTF ~0.5. Higher settings
+# work; they make the sim slower in wall-clock, which the post-hoc re-timing then
+# corrects. Measure before committing to 4K.
+#
+# TELEM=1 reserves a column on the right for the MAVProxy terminal, so Gazebo gets
+# a 4:3-ish slice of the canvas rather than the whole of it.
+RES="${RES:-1280x800}"
+W="${RES%x*}"; H="${RES#*x}"
 if [[ "${TELEM:-0}" == "1" ]]; then
-    W=1920; H=1080; GZ_W=1280; GZ_H=1080
+    # widen the canvas by a telemetry column unless RES already allows for one
+    TELEM_COL="${TELEM_COL:-640}"
+    GZ_W=$W; GZ_H=$H
+    W=$(( W + TELEM_COL ))
 else
-    W=1280; H=800;  GZ_W=1280; GZ_H=800
+    GZ_W=$W; GZ_H=$H
 fi
 mkdir -p "$RUN_DIR"
 
@@ -75,7 +88,7 @@ if [[ "${VISIBLE:-0}" == "1" ]]; then
     log "rendering on the desktop ($DISPLAY) — no recording"
 else
     export DISPLAY=:99
-    log "starting Xvfb on $DISPLAY (${W}x${H})"
+    log "starting Xvfb on $DISPLAY (${W}x${H}; gazebo ${GZ_W}x${GZ_H})"
     Xvfb "$DISPLAY" -screen 0 "${W}x${H}x24" >/tmp/xvfb.log 2>&1 &
     XVFB_PID=$!
     for _ in $(seq 1 30); do xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break; sleep 1; done
