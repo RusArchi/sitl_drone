@@ -535,6 +535,42 @@ module registering `motorfail <1-4>`. This reverses the earlier note calling suc
 a module "sugar": that was written when the trigger was a `MAV_CMD`, and it does
 not survive the switch to a real message. Build it in Phase 4, not Phase 6.
 
+### How telemetry reaches a GCS
+
+Relevant to Phase 4–6: the same channel carries the new message, and the same
+trap catches scripts.
+
+Two different things arrive at a GCS:
+
+- **`STATUSTEXT`** — event text the firmware emits from `gcs().send_text()`
+  (`AP: PreArm: Accels inconsistent`). Fires on events; no rate to configure.
+- **Periodic streams** — ArduPilot pushing messages on a timer, governed by the
+  `SRx_` parameters, one set per MAVLink channel, each a rate in Hz. Defined in
+  `libraries/GCS_MAVLink/GCS_MAVLink_Parameters.cpp`.
+
+| Parameter | Streams |
+|---|---|
+| `SRx_RAW_SENS` | `RAW_IMU`, `SCALED_IMU2/3`, `SCALED_PRESSURE`, `AIRSPEED` |
+| `SRx_EXT_STAT` | `SYS_STATUS`, `POWER_STATUS`, `GPS_RAW_INT`, `NAV_CONTROLLER_OUTPUT` |
+| `SRx_RC_CHAN` | `SERVO_OUTPUT_RAW`, `RC_CHANNELS` |
+| `SRx_POSITION` | `GLOBAL_POSITION_INT`, `LOCAL_POSITION_NED` |
+| `SRx_EXTRA1` | `ATTITUDE`, `SIMSTATE`, `AHRS2`, `ESC_TELEMETRY`, `PID_TUNING` |
+| `SRx_EXTRA2` | `VFR_HUD` |
+| `SRx_EXTRA3` | `AHRS`, `SYSTEM_TIME`, `WIND`, `RANGEFINDER` |
+
+Rates get set three ways: the `SRx_` parameters (persistent), the legacy
+`REQUEST_DATA_STREAM`, or per-message `MAV_CMD_SET_MESSAGE_INTERVAL`.
+
+**The trap:** ArduPilot only sends periodic telemetry to a GCS that asked for it.
+MAVProxy asks automatically; a raw pymavlink script does not. Omitting the
+request makes a script hang waiting for `GPS_RAW_INT` that is never sent, which
+looks exactly like a broken simulator — `fly_fail.py` calls
+`request_streams()` for this reason.
+
+A command sent *to* the vehicle (the Phase 4 message) needs none of this. But a
+message reporting state *back* — a motor-failure status, say — would be added to
+one of these stream groups and inherit the machinery above.
+
 ### Baseline that needs no code (Phase 3)
 
 ArduPilot already kills a motor in-sim via `SIM_ENGINE_FAIL` (bitmask) +
@@ -991,3 +1027,65 @@ it is a paraphrase and should be treated as such.
 | **Motor index vs. test order** | Two different 1–4 numberings. This project uses the **output-channel** one (1–4 → `SERVO1`–`SERVO4`). They agree only for motor 1 (§5 Technical ground truth) | `AP_MotorsMatrix.cpp:592` |
 | **JSON backend** | The UDP link carrying servo outputs to Gazebo and vehicle state back. Ports 9002/9003 (§4 Environment) | `--model JSON` |
 | **RTF** | Real-time factor. Gazebo's sim-seconds per wall-second; 0.47 here, and physics-bound (§4 Environment) | Gazebo |
+
+### 2026-08-28 — the documented command could not be run
+
+- **Believed:** the recording command written into PROJECT.md was ready to
+  copy-paste. It had a comment beside each option explaining what it did.
+- **Actually:** the comments came *after* the backslash line-continuations. A
+  continuation has to be the last character on the line, so the shell ended the
+  command at the first line and ran every following line on its own — `docker
+  exec` complained about missing arguments, then nine `command not found: -e`.
+  Ruslan hit this verbatim.
+- **Lesson:** an example in documentation is code. If it is presented as
+  copy-pasteable it has to be pasted and run at least once. Explanatory comments
+  belong above the block or in a table beside it, never inside a continued
+  command.
+
+### 2026-08-28 — a "minimal" GUI config froze the camera
+
+- **Believed:** the custom `--gui-config` files contained everything needed to
+  render. They had been used for a dozen recordings without trouble.
+- **Actually:** they omitted `InteractiveViewControl`, which is what implements
+  orbit, pan and zoom. It draws no panel, so dropping it from a minimal config
+  looked like removing clutter — but it silently disables all mouse camera
+  control. Ruslan found it by trying to move the view and finding it dead.
+- **Lesson:** when trimming a config down to essentials, "draws nothing" is not
+  the same as "does nothing". Check what a component *does* before deciding it
+  is decoration. Recording-only configs still get used interactively.
+
+### 2026-08-28 — left a dead run going for seven minutes
+
+- **Believed:** the recording had been launched, so reporting "I'll tell you when
+  it finishes" was enough.
+- **Actually:** a full run takes about ninety seconds, which was already known.
+  The run was dead within the first minute — stale `ffmpeg` and flight processes
+  from earlier attempts were still alive, and their cleanup traps run a global
+  `pkill -f 'gz sim'`, which killed the new run's Gazebo. Ruslan waited seven
+  minutes before asking. There were also 107 zombie processes, because the
+  container's PID 1 is `sleep`, which never reaps orphans.
+- **Cost:** seven minutes of the user's time, and the failure was self-inflicted.
+- **Lesson:** if the expected duration of a background job is known, check at
+  that duration. And a cleanup trap that pattern-kills by process name is not
+  safe when runs can overlap — it will kill someone else's simulator.
+
+### 2026-08-28 — a commit message described work that was not in the commit
+
+- **Believed:** the commit that abandoned the telephoto camera had removed
+  `gui-crash-tele.config`. The message said "Drops gui-crash-tele.config".
+- **Actually:** the `rm` never made it into the staged change and the file stayed
+  tracked. It was found days later, still present.
+- **Lesson:** the commit message is a claim about the diff. Read the diff before
+  describing it — `git status` after `git add` costs nothing and would have shown
+  the deletion missing.
+
+### 2026-08-28 — turned one measurement into a rule
+
+- **Believed:** `CRUISE_N` had to be negative for the aircraft to stay in frame,
+  and this was written into the framing notes as a rule.
+- **Actually:** it held only for one particular camera pose. Which direction
+  keeps the aircraft on screen follows the camera's yaw. Ruslan, who could see
+  the screen, said the right value was positive.
+- **Lesson:** a value measured under one configuration is a data point, not a
+  rule. State the relationship that produced it and the check to make, so it
+  survives a changed setup.
