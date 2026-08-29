@@ -7,7 +7,7 @@
 >
 > Update rules: see [CLAUDE.md](CLAUDE.md).
 
-**Last updated:** 2026-08-29
+**Last updated:** 2026-08-30
 **Branch:** `claude/ardupilot-motor-control-gazebo-84hfq8`
 **Upstream:** https://github.com/RusArchi/sitl_drone
 
@@ -75,7 +75,7 @@ the new message reserves a `failure_type` field it does not yet use.
 | 1 | Provision the build/sim environment | **Done** |
 | 2 | ArduCopter SITL flying an iris quad in Gazebo, with visualisation | **Done** 2026-08-26 |
 | 3 | Baseline: kill a rotor with `SIM_ENGINE_FAIL` (no code change) | **Done** 2026-08-27 |
-| 4 | Define the new message in `ardupilotmega.xml`; rebuild ArduCopter **and** pymavlink; prove round-trip | **In progress** — XML done 2026-08-29 |
+| 4 | Define the new message in `ardupilotmega.xml`; rebuild ArduCopter **and** pymavlink; prove round-trip | **In progress** — XML, C build and pymavlink done 2026-08-30; round-trip proven in Python. Copter-side handler still to come |
 | 5 | Handle it in Copter; propagate motor index down to the ESC output | **Not started** |
 | 6 | Send from MAVProxy in flight; record takeoff → command → crash | **Not started** |
 
@@ -86,7 +86,8 @@ environment.
 
 ## 2. Current status
 
-**Phase 4 in progress — the message is defined; nothing is built against it yet.**
+**Phase 4 in progress — the message is defined, compiled into `arducopter` and
+known to pymavlink. Both ends agree on CRC-extra 97. No handler for it yet.**
 
 `MOTOR_FAILURE_SET` (id 11070) and the `MOTOR_FAILURE_TYPE` enum were added to
 `ardupilotmega.xml` on 2026-08-29 — 16 lines, hand-written by Ruslan, the whole
@@ -95,9 +96,19 @@ cleanly, the field binds to the enum, and the message is 4 bytes with
 **CRC-extra 97**. Captured as `patches/mavlink.patch` and the patch round-trip
 tested (stash → apply → identical diff).
 
-Nothing is compiled against it yet. Steps 2–4 of Phase 4 — waf build, pymavlink
-reinstall, `handle_message()` case and the MAVProxy module — are open
-(§8 Next actions).
+`./waf copter` was run on 2026-08-30 (4m16s, succeeded). The build tree now has
+`build/sitl/.../ardupilotmega/mavlink_msg_motor_failure_set.h` with id **11070**,
+`_LEN 4`, `_CRC 97` — so the C side of the protocol is done and the binary can
+recognise the message. It still ignores it: there is no `handle_message()` case.
+
+pymavlink was regenerated from the edited dialect the same day and reports id
+11070 with `crc_extra` **97** — the same value as the C header. That agreement is
+the one thing in Phase 4 that fails silently, and it holds. A pack/parse
+round-trip in Python works.
+
+Step 4 — a `handle_message()` case that prints text back, plus a `motorfail`
+MAVProxy module — is open (§8 Next actions). Nothing has been flown against the
+new binary yet.
 
 ### Resuming in a new session — read this first
 
@@ -112,9 +123,10 @@ grep -c MOTOR_FAILURE ~/ardupilot/modules/mavlink/message_definitions/v1.0/ardup
 - **0** — the tree was reset or the submodule updated. Restore it with
   `./scripts/apply_patches.sh`, then check again.
 
-Then bring the sim up in the order below (Gazebo first), and note the build has
-**not** been run since the XML changed, so `arducopter` in the container still
-predates the new message.
+Then bring the sim up in the order below (Gazebo first). Both `arducopter` and
+the venv's pymavlink were regenerated on 2026-08-30, after the XML change, so
+the container is consistent with the dialect **as long as the check above says
+5**. If it says 0, restore the patch and rebuild both.
 
 **Phase 3 complete — a motor failure drops the aircraft, on video, with no code changes.**
 
@@ -423,8 +435,8 @@ The signal path the assignment asks for, end to end:
 | # | Link in the chain | Where |
 |---|---|---|
 | 1 | New `<message>` id **11070** + `MOTOR_FAILURE_TYPE` enum | `modules/mavlink/message_definitions/v1.0/ardupilotmega.xml`. **Done 2026-08-29** |
-| 2 | C headers | regenerated automatically by waf's `mavgen` task (`Tools/ardupilotwaf/mavgen.py`) — editing the XML and rebuilding is enough |
-| 3 | Python side (MAVProxy / script) | **rebuild required** — a new msgid changes the wire format, so the venv's PyPI `pymavlink` must be replaced by one generated from the edited XML (§7 Gotchas) |
+| 2 | C headers | regenerated automatically by waf's `mavgen` task (`Tools/ardupilotwaf/mavgen.py`) — editing the XML and rebuilding is enough. **Done 2026-08-30**, `_CRC 97` |
+| 3 | Python side (MAVProxy / script) | **rebuild required** — a new msgid changes the wire format, so the venv's PyPI `pymavlink` must be replaced by one generated from the edited XML (§7 Gotchas). **Done 2026-08-30**, `crc_extra` 97 — matches |
 | 4 | Copter receives it | `ArduCopter/GCS_MAVLink_Copter.cpp:1179` `GCS_MAVLINK_Copter::handle_message()` — add a `case` to the `msg.msgid` switch, as `SET_ATTITUDE_TARGET` does at line 1184. Unhandled ids fall through to the base class and are **silently dropped** |
 | 5 | Stored state | new setter on `AP_MotorsMatrix` / `AP_MotorsMulticopter` |
 | 6 | **Applied to ESC output** | `AP_Motors/AP_MotorsMatrix.cpp:180`, the `rc_write()` call inside `output_to_motors()` |
@@ -706,8 +718,9 @@ Do not rediscover these.
   validation on rejects `ardupilotmega.xml` at the `<superseded>` element in
   message `RADIO` (id 166) — `SCHEMAV_ELEMENT_CONTENT`. Verified 2026-08-29 on
   the unmodified file, so it is **not** caused by local edits. waf builds fine.
-  When hand-running mavgen to check an edit, pass `validate=False` or the error
-  looks like your fault.
+  When hand-running mavgen to check an edit, pass `--no-validate` or the error
+  looks like your fault. (The `mavgen.py` script takes `--no-validate`; the
+  `validate=False` keyword is the Python-API form, not a command-line flag.)
 - **A backslash in a `<description>` becomes an escape sequence.** mavgen puts
   descriptions verbatim into Python `"""docstrings"""`, so `stopped\restored`
   produced a real carriage return (0x0d) in the generated help text. Use `/` or
@@ -742,19 +755,33 @@ Anticipated, not yet hit (Phases 4–5):
    1. ~~Add `MOTOR_FAILURE_SET` + `MOTOR_FAILURE_TYPE` to `ardupilotmega.xml`~~
       **Done 2026-08-29** (§5 Technical ground truth). Captured in `patches/`.
 
-   2. **Generate the C headers.** waf runs mavgen as part of the build, so this
-      is just a build — but to watch mavgen on its own first, generate into a
-      scratch directory and read what it writes:
+   2. ~~**Generate the C headers.**~~ **Done 2026-08-30.** `./waf copter`
+      finished in 4m16s; the build tree now holds
+      `mavlink_msg_motor_failure_set.h` with `MAVLINK_MSG_ID_MOTOR_FAILURE_SET
+      11070`, `_LEN 4`, `_CRC 97`. The `arducopter` binary knows the message
+      exists; it still has no handler for it. Procedure kept below because it is
+      re-run after every XML change.
+
+      waf runs mavgen as part of the build, so this is just a build — but to
+      watch mavgen on its own first, generate into a scratch directory and read
+      what it writes:
 
       ```bash
       docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && \
-        python3 -m pymavlink.tools.mavgen --lang=C --wire-protocol=2.0 \
-          --validate=False -o /tmp/hdr \
+        ~/ardupilot/venv-ardupilot/bin/mavgen.py --lang=C --wire-protocol=2.0 \
+          --no-validate -o /tmp/hdr \
           ~/ardupilot/modules/mavlink/message_definitions/v1.0/ardupilotmega.xml'
       ```
 
-      `--validate=False` is required: the schema validator fails on the
+      `--no-validate` is required: the schema validator fails on the
       **pristine** file, not because of local edits (§7 Gotchas).
+
+      Call mavgen by its **absolute path in the venv's `bin/`**. `python3 -m
+      pymavlink.tools.mavgen` does not work — the installed wheel has no
+      importable `tools` subpackage (verified 2026-08-29), and
+      `pymavlink.generator.mavgen` raises a `DeprecationWarning` on purpose. A
+      bare `mavgen.py` is also wrong: a second venv at `~/venv-ardupilot` sits
+      earlier on the container's `PATH` and would answer instead.
 
       Then the real build:
 
@@ -766,7 +793,15 @@ Anticipated, not yet hit (Phases 4–5):
       **Verify:** `MAVLINK_MSG_ID_MOTOR_FAILURE_SET 11070` and `..._CRC 97` in
       `build/sitl/libraries/GCS_MAVLink/include/mavlink/v2.0/ardupilotmega/mavlink_msg_motor_failure_set.h`.
 
-   3. **Regenerate pymavlink into the venv**, replacing the PyPI copy:
+   3. ~~**Regenerate pymavlink into the venv.**~~ **Done 2026-08-30.** Python
+      reports id 11070, `crc_extra` **97**, fields in order — matching the C
+      header, which is the agreement the whole scheme rests on. A pack/parse
+      round-trip in pymavlink produced
+      `fd04000000ffbe3e2b00010103017dc9` (msgid `3e2b00` little-endian = 11070,
+      payload `01 01 03 01`) and parsed back with the right field values.
+      Procedure kept below because it is re-run after every XML change.
+
+      Replaces the PyPI copy:
 
       ```bash
       docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && \
@@ -781,6 +816,12 @@ Anticipated, not yet hit (Phases 4–5):
       **Verify — the step that actually matters:** Python's `crc_extra` for 11070
       must equal the C `_CRC` define. Both must read **97**. If they differ,
       everything downstream compiles, runs, looks correct and does nothing.
+
+      ```bash
+      docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && \
+        python3 -c "from pymavlink.dialects.v20 import ardupilotmega as m; \
+          d=m.MAVLink_motor_failure_set_message; print(d.id, d.crc_extra, d.fieldnames)"'
+      ```
 
    4. **Make receipt visible.** A `case` in `GCS_MAVLINK_Copter::handle_message()`
       whose body is only a `GCS_SEND_TEXT`, plus a `motorfail` MAVProxy module
@@ -812,6 +853,8 @@ wiped by a `git submodule update` without warning (§3 Repo layout).
 | Date | Change |
 |---|---|
 | 2026-08-29 | **Phase 4 step 1 done** — `MOTOR_FAILURE_SET` (id 11070) and the `MOTOR_FAILURE_TYPE` enum added to `ardupilotmega.xml` by hand; 4-byte payload, CRC-extra 97, verified by running mavgen over the edited dialect. Added `patches/` with `make_patches.sh` / `apply_patches.sh`, round-trip tested. Recorded three new §7 Gotchas: the validator fails on the pristine file, a backslash in a `<description>` becomes an escape, and the indentation convention |
+| 2026-08-30 | **Phase 4 step 2 done** — `./waf copter` succeeded (4m16s); `mavlink_msg_motor_failure_set.h` in the build tree carries id 11070, `_LEN 4`, `_CRC 97`. Corrected the standalone-mavgen command in §8 Next actions: the invocation and the flag were both wrong (§10 Troubleshooting log). Moved §11 Glossary to the end of the file — it had been inserted mid-§10, stranding five entries after it |
+| 2026-08-30 | **Phase 4 step 3 done** — pymavlink regenerated from the edited dialect into the venv. Python reports id 11070, `crc_extra` 97, fields in order — matching the C header. Pack/parse round-trip verified |
 | 2026-08-28 | Added §11 Glossary — one table defining the MAVLink, ArduPilot and Gazebo terms this file uses, so they are not re-explained inline. Placed at the end to avoid renumbering 43 cross-references |
 | 2026-08-27 | Each recording is now a self-contained directory — video, real-time cut, `run.txt` manifest, flight/MAVProxy/SITL/Gazebo logs |
 | 2026-08-27 | `set_mode` now retries (a single attempt raced the EKF and killed runs with "mode GUIDED not accepted"); added `CRUISE_SPEED`; documented every recording knob and the framing rules |
@@ -1003,31 +1046,6 @@ is append-only** — unlike the rest of the file, history here *is* the value.
 
 ---
 
-## 11. Glossary
-
-Terms used throughout this file. **All of these are real vocabulary** — from
-MAVLink, ArduPilot or Gazebo — not descriptions invented here. If an explanation
-elsewhere in this file uses a word that is not in this table and not in the code,
-it is a paraphrase and should be treated as such.
-
-| Term | Meaning | Where it lives |
-|---|---|---|
-| **Dialect** | One XML file defining MAVLink messages. Dialects include each other: `ardupilotmega.xml` includes `common.xml`, which includes `minimal.xml`. ArduPilot builds `ardupilotmega`, so it gets all three | `modules/mavlink/message_definitions/v1.0/` |
-| **msgid** | The message's number on the wire. `HEARTBEAT` is 0; ours is 11070. Distinct from a `MAV_CMD` value, which is a number *inside* `COMMAND_LONG` and not a message at all | `<message id="…">` |
-| **CRC-extra** | A checksum byte derived from a message's name, field types and field order, mixed into every packet. Two builds generated from different XML disagree on it, and the receiver **drops the packet silently**. The Phase 4 trap (§7 Gotchas) | generated `_CRC` define |
-| **mavgen** | MAVLink's code generator. Turns the XML into C headers and Python modules. Run by waf for C, by `pip install` for pymavlink | `Tools/ardupilotwaf/mavgen.py` |
-| **pymavlink** | The Python MAVLink library. The venv's copy is from PyPI and knows nothing of local XML edits until reinstalled from `modules/mavlink/pymavlink` | `venv-ardupilot/…/pymavlink` |
-| **SITL** | Software In The Loop — ArduPilot's real flight code compiled for the PC, with simulated sensors instead of hardware | `libraries/AP_HAL_SITL/` |
-| **Mixer** | The step turning one roll/pitch/yaw/thrust demand into four per-motor thrusts, using the frame's motor table | `AP_MotorsMatrix::output_armed_stabilizing()` |
-| **Stability patch** | The mixer's rescaling when a demand cannot be met — it trades thrust for attitude control. Why the motor kill goes *downstream* of it (§6 Decisions) | same function |
-| **Spool state** | The armed/disarmed ramp — ground idle, spooling up, throttle unlimited. Motors do not jump to a commanded value | `AP_MotorsMulticopter` |
-| **Thrust linearisation** | Correcting for thrust rising roughly with the *square* of motor speed, so a 50% demand gives 50% thrust rather than 25% | `AP_MotorsMulticopter` |
-| **`rc_write()`** | The last line of flight code to touch a motor output before it becomes PWM. The kill injection point (§5 Technical ground truth) | `AP_Motors_Class.cpp:96` |
-| **PWM** | The pulse width, ~1000–2000 µs, that a real ESC reads as a throttle command. What SITL ships to Gazebo instead of a wire | `SITL_State.cpp` |
-| **Motor index vs. test order** | Two different 1–4 numberings. This project uses the **output-channel** one (1–4 → `SERVO1`–`SERVO4`). They agree only for motor 1 (§5 Technical ground truth) | `AP_MotorsMatrix.cpp:592` |
-| **JSON backend** | The UDP link carrying servo outputs to Gazebo and vehicle state back. Ports 9002/9003 (§4 Environment) | `--model JSON` |
-| **RTF** | Real-time factor. Gazebo's sim-seconds per wall-second; 0.47 here, and physics-bound (§4 Environment) | Gazebo |
-
 ### 2026-08-28 — the documented command could not be run
 
 - **Believed:** the recording command written into PROJECT.md was ready to
@@ -1089,3 +1107,66 @@ it is a paraphrase and should be treated as such.
 - **Lesson:** a value measured under one configuration is a data point, not a
   rule. State the relationship that produced it and the check to make, so it
   survives a changed setup.
+
+---
+
+### 2026-08-29 — the mavgen command in the docs did not run
+
+- **Believed:** `python3 -m pymavlink.tools.mavgen` was the way to run the
+  generator standalone. It is the invocation pymavlink's own source recommends,
+  and `pymavlink/tools/mavgen.py` exists in the mavlink submodule.
+- **Actually:** `ModuleNotFoundError: No module named 'pymavlink.tools'`. The
+  installed wheel ships `pymavlink/generator/` but not `pymavlink/tools/`; the
+  generator is installed as a **script** at
+  `~/ardupilot/venv-ardupilot/bin/mavgen.py`. (`pymavlink.generator.mavgen`
+  raises a `DeprecationWarning` pointing back at the module that isn't there.)
+- **Lesson:** a command copied from a project's source tree is not a command
+  verified against the installed package. Run it once before writing it into
+  §8 Next actions as a step someone else will follow.
+
+### 2026-08-30 — the same mavgen command was wrong twice
+
+- **Believed:** after fixing the invocation, `--validate=False` was the flag to
+  skip schema validation. It is the name used in mavgen's Python API and in
+  ArduPilot's waf wrapper.
+- **Actually:** the command-line script takes `--no-validate`. `--validate=False`
+  is rejected as an unrecognised argument. The API keyword and the CLI flag are
+  spelled differently.
+- **Lesson:** an option's name in a library's function signature is not its name
+  on that library's command line. Two rounds were lost to one unrun command —
+  run it once, in full, before writing it down.
+
+### 2026-08-30 — §11 Glossary was inserted into the middle of §10
+
+- **Believed:** the glossary had been added "at the end of the file" on
+  2026-08-28, so §10 Troubleshooting log stayed contiguous.
+- **Actually:** it went in above the last five entries, which were left stranded
+  after the glossary table. Found on 2026-08-30 by listing headings.
+- **Lesson:** when appending to a file, check what actually follows the
+  insertion point. "The end" of a section is not the end of the file, and a
+  heading listing (`grep -n "^#"`) shows the difference in one command.
+
+## 11. Glossary
+
+Terms used throughout this file. **All of these are real vocabulary** — from
+MAVLink, ArduPilot or Gazebo — not descriptions invented here. If an explanation
+elsewhere in this file uses a word that is not in this table and not in the code,
+it is a paraphrase and should be treated as such.
+
+| Term | Meaning | Where it lives |
+|---|---|---|
+| **Dialect** | One XML file defining MAVLink messages. Dialects include each other: `ardupilotmega.xml` includes `common.xml`, which includes `minimal.xml`. ArduPilot builds `ardupilotmega`, so it gets all three | `modules/mavlink/message_definitions/v1.0/` |
+| **msgid** | The message's number on the wire. `HEARTBEAT` is 0; ours is 11070. Distinct from a `MAV_CMD` value, which is a number *inside* `COMMAND_LONG` and not a message at all | `<message id="…">` |
+| **CRC-extra** | A checksum byte derived from a message's name, field types and field order, mixed into every packet. Two builds generated from different XML disagree on it, and the receiver **drops the packet silently**. The Phase 4 trap (§7 Gotchas) | generated `_CRC` define |
+| **mavgen** | MAVLink's code generator. Turns the XML into C headers and Python modules. Run by waf for C, by `pip install` for pymavlink | `Tools/ardupilotwaf/mavgen.py` |
+| **pymavlink** | The Python MAVLink library. The venv's copy is from PyPI and knows nothing of local XML edits until reinstalled from `modules/mavlink/pymavlink` | `venv-ardupilot/…/pymavlink` |
+| **SITL** | Software In The Loop — ArduPilot's real flight code compiled for the PC, with simulated sensors instead of hardware | `libraries/AP_HAL_SITL/` |
+| **Mixer** | The step turning one roll/pitch/yaw/thrust demand into four per-motor thrusts, using the frame's motor table | `AP_MotorsMatrix::output_armed_stabilizing()` |
+| **Stability patch** | The mixer's rescaling when a demand cannot be met — it trades thrust for attitude control. Why the motor kill goes *downstream* of it (§6 Decisions) | same function |
+| **Spool state** | The armed/disarmed ramp — ground idle, spooling up, throttle unlimited. Motors do not jump to a commanded value | `AP_MotorsMulticopter` |
+| **Thrust linearisation** | Correcting for thrust rising roughly with the *square* of motor speed, so a 50% demand gives 50% thrust rather than 25% | `AP_MotorsMulticopter` |
+| **`rc_write()`** | The last line of flight code to touch a motor output before it becomes PWM. The kill injection point (§5 Technical ground truth) | `AP_Motors_Class.cpp:96` |
+| **PWM** | The pulse width, ~1000–2000 µs, that a real ESC reads as a throttle command. What SITL ships to Gazebo instead of a wire | `SITL_State.cpp` |
+| **Motor index vs. test order** | Two different 1–4 numberings. This project uses the **output-channel** one (1–4 → `SERVO1`–`SERVO4`). They agree only for motor 1 (§5 Technical ground truth) | `AP_MotorsMatrix.cpp:592` |
+| **JSON backend** | The UDP link carrying servo outputs to Gazebo and vehicle state back. Ports 9002/9003 (§4 Environment) | `--model JSON` |
+| **RTF** | Real-time factor. Gazebo's sim-seconds per wall-second; 0.47 here, and physics-bound (§4 Environment) | Gazebo |
