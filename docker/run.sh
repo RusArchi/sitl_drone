@@ -45,13 +45,19 @@ do_build() {
 detect_display() {
     if [[ -n "${DISPLAY:-}" ]]; then echo "$DISPLAY"; return 0; fi
     command -v xdpyinfo >/dev/null 2>&1 || return 1
+    # Try EVERY cookie, not just the first. GNOME leaves stale
+    # .mutter-Xwaylandauth.* files behind across logins, so `head -1` can pick a
+    # dead one and report the display unreachable when it is perfectly fine --
+    # which is exactly what made the desktop appear to "disappear" mid-session.
     local cookie d
-    cookie="$(ls -1 /run/user/"$(id -u)"/.mutter-Xwaylandauth.* 2>/dev/null | head -1 || true)"
     for d in :0 :1; do
         [[ -S /tmp/.X11-unix/X${d#:} ]] || continue
-        if XAUTHORITY="$cookie" DISPLAY="$d" timeout 5 xdpyinfo >/dev/null 2>&1; then
-            echo "$d"; return 0
-        fi
+        for cookie in /run/user/"$(id -u)"/.mutter-Xwaylandauth.*; do
+            [[ -f "$cookie" ]] || continue
+            if XAUTHORITY="$cookie" DISPLAY="$d" timeout 5 xdpyinfo >/dev/null 2>&1; then
+                echo "$d"; return 0
+            fi
+        done
     done
     return 1
 }
@@ -62,9 +68,13 @@ detect_display() {
 # SO_PEERCRED, and the container user shares uid 1000, so it matches.
 gui_auth() {
     local disp="$1" cookie
-    cookie="$(ls -1 /run/user/"$(id -u)"/.mutter-Xwaylandauth.* 2>/dev/null | head -1 || true)"
     command -v xhost >/dev/null 2>&1 || return 0
-    XAUTHORITY="$cookie" DISPLAY="$disp" xhost "+SI:localuser:$(id -un)" >/dev/null 2>&1 || true
+    # Same reason as detect_display: try them all, the first may be stale.
+    for cookie in /run/user/"$(id -u)"/.mutter-Xwaylandauth.*; do
+        [[ -f "$cookie" ]] || continue
+        XAUTHORITY="$cookie" DISPLAY="$disp" xhost "+SI:localuser:$(id -un)" >/dev/null 2>&1 && return 0
+    done
+    return 0
 }
 
 # Collect the docker args needed for on-screen rendering. Emits nothing when no
