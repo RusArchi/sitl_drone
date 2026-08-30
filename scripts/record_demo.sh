@@ -88,6 +88,13 @@ if [[ "${VISIBLE:-0}" == "1" ]]; then
     log "rendering on the desktop ($DISPLAY) — no recording"
 else
     export DISPLAY=:99
+    # A dead Xvfb leaves /tmp/.X99-lock behind and the next one refuses to start
+    # ("Server is already active"), so the run either fails outright or silently
+    # keeps a PREVIOUS server's resolution and RES looks ignored. Clear stale
+    # state first, but only when nothing is actually listening on :99.
+    if ! pgrep -x Xvfb >/dev/null 2>&1; then
+        rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
+    fi
     log "starting Xvfb on $DISPLAY (${W}x${H}; gazebo ${GZ_W}x${GZ_H})"
     Xvfb "$DISPLAY" -screen 0 "${W}x${H}x24" >/tmp/xvfb.log 2>&1 &
     XVFB_PID=$!
@@ -134,13 +141,19 @@ GUI_CFG="${GUI_CFG:-$REPO/docker/gz/gui-record.config}"
 #     CAM_POSE="22 -14 22 0 0.71 2.28"
 # Get the numbers for a view you like by flying the GUI camera with the mouse and
 # running scripts/camera_pose.sh, which prints them in exactly this order.
+# The config also hard-codes <window><width>/<height>. Those must track RES or
+# Gazebo keeps its default window on a larger canvas and the rest of the capture
+# is solid black -- the render simply never fills the frame, which looks like a
+# broken recording rather than a sizing problem.
+GEN_CFG="/tmp/gui-generated.config"
+sed -E -e "s|<width>[0-9]+</width>|<width>${GZ_W}</width>|" \
+       -e "s|<height>[0-9]+</height>|<height>${GZ_H}</height>|" \
+       "$GUI_CFG" > "$GEN_CFG"
 if [[ -n "${CAM_POSE:-}" ]]; then
-    GEN_CFG="/tmp/gui-cam-override.config"
-    sed -E "s|<camera_pose>[^<]*</camera_pose>|<camera_pose>${CAM_POSE}</camera_pose>|" \
-        "$GUI_CFG" > "$GEN_CFG"
-    GUI_CFG="$GEN_CFG"
+    sed -i -E "s|<camera_pose>[^<]*</camera_pose>|<camera_pose>${CAM_POSE}</camera_pose>|" "$GEN_CFG"
     log "camera pose overridden: $CAM_POSE"
 fi
+GUI_CFG="$GEN_CFG"
 setsid gz sim -v2 -r --gui-config "$GUI_CFG" "$WORLD" >/tmp/gz_sim.log 2>&1 &
 
 # Wait for the render window to actually exist before trying to capture it.

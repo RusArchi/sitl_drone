@@ -23,7 +23,11 @@ from pymavlink import mavutil
 
 import os
 
-CONNECT = os.environ.get("CONNECT", "tcp:127.0.0.1:5760")
+# `or` not a get() default: the recorder exports CONNECT unconditionally, so
+# without TELEM it arrives as an empty string, and a get() default does not
+# replace that. pymavlink then treats "" as a serial device and dies with
+# "could not open port ''".
+CONNECT = os.environ.get("CONNECT") or "tcp:127.0.0.1:5760"
 
 # Env-overridable, because framing the shot is a tuning loop: a camera close
 # enough to show the airframe cannot also contain a long cruise and a high fall.
