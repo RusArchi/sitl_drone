@@ -73,6 +73,22 @@ gui_auth() {
 # GPU: logind puts an ACL on /dev/dri/* granting uid 1000. The container user is
 # also uid 1000, so the ACL carries over and no group juggling is needed. The
 # video/render groups are added anyway, for when no seat ACL is present.
+# GPU passthrough, independent of the desktop display. Recording renders on the
+# container's own Xvfb, so it needs the GPU even when no desktop X is reachable
+# -- putting this inside gui_args() would silently leave headless runs on
+# llvmpipe, which is exactly the ~1 fps case this is meant to fix.
+#
+# NVIDIA_DRIVER_CAPABILITIES must include `graphics`: the default is
+# `utility,compute`, enough for nvidia-smi and CUDA but NOT for OpenGL.
+# Install the toolkit with scripts/setup_gpu.sh.
+gpu_args() {
+    docker info --format '{{range $k,$v := .Runtimes}}{{$k}} {{end}}' 2>/dev/null \
+        | grep -qw nvidia || return 0
+    printf '%s\n' --gpus all \
+        -e NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility \
+        -e NVIDIA_VISIBLE_DEVICES=all
+}
+
 gui_args() {
     local disp
     disp="$(detect_display)" || return 0
@@ -94,8 +110,14 @@ gui_args() {
 do_run() {
     docker build -t "$IMAGE" "$(dirname "$0")" || true
 
-    local gui=()
+    local gui=() gpu=()
     mapfile -t gui < <(gui_args)
+    mapfile -t gpu < <(gpu_args)
+    if [[ ${#gpu[@]} -gt 0 ]]; then
+        echo "nvidia runtime detected — GPU rendering enabled"
+    else
+        echo "no nvidia runtime — software rendering (llvmpipe, ~1 fps); see scripts/setup_gpu.sh"
+    fi
     if [[ ${#gui[@]} -gt 0 ]]; then
         echo "display ${gui[1]#DISPLAY=} reachable — wiring X socket and GPU in"
     else
@@ -103,9 +125,19 @@ do_run() {
         echo "  Needs a logged-in desktop session on this machine; ssh alone is fine."
     fi
 
+    # Timezone: the image is Etc/UTC, so every timestamp written inside the
+    # container -- run ids, log lines, run.txt -- came out 3 hours behind local
+    # time. Follow the HOST's zone rather than baking one into the image, so this
+    # stays right if the machine moves.
+    local tz
+    tz="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo UTC)"
+
     docker run -d --name "$NAME" \
         --network host \
+        -e "TZ=$tz" \
+        -v /etc/localtime:/etc/localtime:ro \
         ${gui[@]+"${gui[@]}"} \
+        ${gpu[@]+"${gpu[@]}"} \
         -v "$HOME/ardupilot:/home/rusik/ardupilot" \
         -v "$HOME/ardupilot_gazebo:/home/rusik/ardupilot_gazebo" \
         -v "$(dirname "$0")/..:/workspace/sitl_drone" \

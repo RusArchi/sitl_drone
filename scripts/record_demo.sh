@@ -92,7 +92,11 @@ else
     # ("Server is already active"), so the run either fails outright or silently
     # keeps a PREVIOUS server's resolution and RES looks ignored. Clear stale
     # state first, but only when nothing is actually listening on :99.
-    if ! pgrep -x Xvfb >/dev/null 2>&1; then
+    # pgrep matches ZOMBIES too, and this container's PID 1 is `sleep`, which
+    # never reaps them -- so a defunct Xvfb made this guard think a server was
+    # live, the lock survived, and every later run died with "Server is already
+    # active for display 99". Count only processes in a non-Z state.
+    if ! ps -e -o stat=,comm= | awk '$2 == "Xvfb" && $1 !~ /Z/ {found=1} END {exit !found}'; then
         rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
     fi
     log "starting Xvfb on $DISPLAY (${W}x${H}; gazebo ${GZ_W}x${GZ_H})"
