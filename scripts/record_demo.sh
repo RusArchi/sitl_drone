@@ -212,7 +212,13 @@ if [[ "${TELEM:-0}" == "1" ]]; then
     # telemetry, and any command typed at the MAV> prompt.
     FANOUT="${FANOUT_PORT:-14551}"
     log "starting MAVProxy (owns tcp:5760, fans out to udp:127.0.0.1:$FANOUT)"
-    setsid xterm -geometry 80x64+${GZ_W}+0 -fa Monospace -fs 9 \
+    # Scale the font with the canvas. A fixed 9pt font is legible at 1280x800 but
+    # unreadable once the recording is 4K -- the terminal keeps the same character
+    # count while every character shrinks relative to the frame.
+    TELEM_FS="${TELEM_FS:-$(( H / 90 ))}"
+    (( TELEM_FS < 9 )) && TELEM_FS=9
+    log "  telemetry font ${TELEM_FS}pt for ${H}px tall canvas"
+    setsid xterm -geometry 80x64+${GZ_W}+0 -fa Monospace -fs "$TELEM_FS" \
         -bg black -fg green -title "MAVProxy telemetry" \
         -e bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && \
             mavproxy.py --master tcp:127.0.0.1:5760 --out 127.0.0.1:$FANOUT \
@@ -332,8 +338,15 @@ s, w = float(m.group(1)), float(m.group(2))
 print(f'{max(0.05, min(1.0, s/w)):.4f}')")"
         RT="$RUN_DIR/$RUN_ID-realtime.mp4"
         log "measured RTF $RTF — writing real-time version"
+        # setpts compresses the timeline, but ffmpeg keeps the OUTPUT frame rate
+        # at the input's, so it silently drops the surplus frames -- a 919-frame
+        # capture came out as 365. Raise the output rate by the same factor to
+        # keep every frame; that is also what makes the re-timed cut smoother
+        # than the raw one rather than choppier.
+        RT_FPS="$(python3 -c "print(min(60, max(15, round($FPS / $RTF))))")"
+        log "  re-timed output at ${RT_FPS} fps (keeps every captured frame)"
         if ffmpeg -hide_banner -loglevel error -y -i "$OUT" \
-                -filter:v "setpts=${RTF}*PTS" -an "$RT" 2>/dev/null; then
+                -filter:v "setpts=${RTF}*PTS" -r "$RT_FPS" -an "$RT" 2>/dev/null; then
             log "saved: $RT ($(du -h "$RT" | cut -f1))"
         else
             log "re-timing failed; the wall-clock capture is still valid"
