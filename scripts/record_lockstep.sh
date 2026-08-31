@@ -24,7 +24,11 @@ OUT_DIR="$REPO_HOST/recordings/lockstep-$STAMP"
 
 : "${WORLD:=iris_runway.sdf}"
 : "${FLIGHT:=fly_fail.py}"
-: "${RES:=2560x1600}"
+# RES is the window size in LOGICAL pixels. This display is HiDPI at 2x, so the
+# window comes out twice this on screen -- 2560x1600 became 5120x2166 and spilled
+# off a 5504x2304 screen. The recorder captures device pixels, so 1280x800 here
+# still yields a 2560x1600 video.
+: "${RES:=1280x800}"
 : "${CAM_POSE:=3.7 12.2 4.6 0 0.41 -2.58}"
 : "${TAKEOFF_ALT:=4}"; : "${CRUISE_N:=10}"; : "${CRUISE_SPEED:=2}"; : "${KILL_AFTER:=4}"
 
@@ -39,7 +43,12 @@ S="$(loginctl list-sessions --no-legend | awk '$4=="seat0"{print $1}' | head -1)
 loginctl unlock-session "$S" 2>/dev/null || true
 
 log "clearing anything left running"
-d 'pkill -9 -f "gz sim" ; pkill -9 -f arducopter ; pkill -9 -f sim_vehicle ; pkill -9 xwd ; true'
+# The bracket trick matters: these run via `bash -lc '<the whole string>'`, so the
+# shell's OWN command line contains every pattern. A plain `pkill -f "gz sim"`
+# therefore matches that shell and kills it, docker exec returns non-zero, and
+# set -e aborts this script with no output. "[g]z sim" matches the target but
+# not the literal pattern text.
+d 'pkill -9 -f "[g]z sim" ; pkill -9 -f "[a]rducopter" ; pkill -9 -f "[s]im_vehicle" ; pkill -9 -f "[x]wd" ; true'
 sleep 2
 d 'rm -f ~/ign_recording.mp4 ~/ign_recording.ogv'
 
@@ -116,4 +125,4 @@ else
 fi
 
 log "shutting the simulation down"
-d 'pkill -9 -f "gz sim" ; pkill -9 -f arducopter ; pkill -9 -f sim_vehicle ; true'
+d 'pkill -9 -f "[g]z sim" ; pkill -9 -f "[a]rducopter" ; pkill -9 -f "[s]im_vehicle" ; true'
