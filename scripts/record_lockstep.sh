@@ -29,11 +29,15 @@ OUT_DIR="$REPO_HOST/recordings/lockstep-$STAMP"
 
 : "${WORLD:=iris_runway.sdf}"
 : "${FLIGHT:=fly_fail.py}"
-# RES is the window size in LOGICAL pixels. This display is HiDPI at 2x, so the
-# window comes out twice this on screen -- 2560x1600 became 5120x2166 and spilled
-# off a 5504x2304 screen. The recorder captures device pixels, so 1280x800 here
-# still yields a 2560x1600 video.
-: "${RES:=1280x800}"
+# RES is the recorded video size. The recorder captures the render surface at the
+# window's LOGICAL size, so this is exactly what comes out -- an earlier 1280x800
+# window produced a 1280x752 video, not the 2560 I assumed from HiDPI.
+#
+# QT_SCALE_FACTOR=1 below defeats this display's 2x scaling, which otherwise
+# turns a 2560 request into a 5120-wide window that spills off a 5504x2304
+# screen. With scaling off, 2560x1600 is a 2560x1600 window and a 2560x1600
+# video -- four times the pixels, and it still fits.
+: "${RES:=2560x1600}"
 : "${CAM_POSE:=3.7 12.2 4.6 0 0.41 -2.58}"
 : "${TAKEOFF_ALT:=4}"; : "${CRUISE_N:=10}"; : "${CRUISE_SPEED:=2}"; : "${KILL_AFTER:=4}"
 
@@ -60,7 +64,7 @@ d 'rm -f ~/ign_recording.mp4 ~/ign_recording.ogv'
 # Window size must match RES or Gazebo keeps its default and the rest is black.
 log "starting Gazebo on the desktop display (hardware OpenGL)"
 d "sed -E 's|<width>[0-9]+</width>|<width>${RES%x*}</width>|; s|<height>[0-9]+</height>|<height>${RES#*x}</height>|; s|<camera_pose>[^<]*</camera_pose>|<camera_pose>${CAM_POSE}</camera_pose>|' '$CFG' > /tmp/lockstep.config"
-docker exec -d sitl_drone bash -lc 'setsid gz sim -v1 -r --gui-config /tmp/lockstep.config '"$WORLD"' >/tmp/gz_lockstep.log 2>&1 </dev/null'
+docker exec -d sitl_drone bash -lc 'export QT_SCALE_FACTOR=1 QT_AUTO_SCREEN_SCALE_FACTOR=0; setsid gz sim -v1 -r --gui-config /tmp/lockstep.config '"$WORLD"' >/tmp/gz_lockstep.log 2>&1 </dev/null'
 
 for _ in $(seq 1 60); do
     d 'xdotool search --name "Gazebo Sim" >/dev/null 2>&1' && break
