@@ -4,9 +4,14 @@
 #
 # Why this exists: every scripted capture path samples the screen on a timer, so
 # when the GUI redraws slowly most frames are duplicates -- our best automated
-# recording holds ~1.4 unique frames per second. Gazebo's recorder instead makes
-# the SIMULATION WAIT for each frame to be rendered, so a duplicate frame is
-# impossible and the result is smooth no matter how slow the renderer is.
+# recording holds ~1.4 unique frames per second. Gazebo's recorder takes frames
+# from the render output instead, so nothing is ever captured twice, and
+# use_sim_time stamps them on the simulation clock so playback speed is right
+# with no re-timing.
+#
+# It does NOT use lockstep. Lockstep would make the GUI wait for each frame, but
+# the ArduPilot plugin already blocks the server waiting on SITL packets, and the
+# two deadlock -- choosing mp4 froze the GUI outright.
 #
 # It cannot be started from a script: the recorder is a GUI button and Qt refuses
 # synthetic clicks (xdotool, XSendEvent and key events were all rejected). So you
@@ -81,8 +86,7 @@ cat <<'BANNER'
        (hovering it shows the tooltip "Record Video").
     2. In the menu that opens, choose  mp4.
 
-  Recording is now running in lockstep: the simulation deliberately runs
-  slow, waiting for each frame. That is expected and is the whole point.
+  Recording is now running. The simulation may slow down; that is fine.
 --------------------------------------------------------------------------
 BANNER
 read -r -p "Press Enter here once you have clicked mp4... " _
