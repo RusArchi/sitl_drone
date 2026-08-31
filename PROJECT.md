@@ -389,6 +389,22 @@ anything can fail, so even an aborted run says what it was.
 Round-trip verified 2026-08-27: a config pose of `22 -14 22 0 0.715 2.279` reads
 back identically.
 
+### Which recording method to use
+
+Measured on the same flight, counting **unique** frames (`mpdecimate`), which is
+the only figure that reflects what a viewer sees:
+
+| Method | Unique fps | Notes |
+|---|---|---|
+| **Gazebo's own VideoRecorder** | **5.6** | Best quality. Needs two GUI clicks — `scripts/record_lockstep.sh` does the rest |
+| `CAPTURE=xwd` on the desktop | 1.4 | Fully scripted, hardware GL, sharp |
+| Xvfb + `x11grab` (default) | 0.8 | Fully scripted, software rendering, soft and choppy |
+
+The recorder wins because it takes frames from the render output instead of
+sampling the screen on a timer, so it cannot capture the same picture twice.
+`use_sim_time` also stamps frames on the simulation clock, so its output already
+plays at true speed and skips the re-timing step.
+
 ### Recording telemetry alongside the sim
 
 `TELEM=1` widens the canvas to 1920x1080 and puts a live MAVProxy terminal beside
@@ -745,6 +761,10 @@ Do not rediscover these.
   last, so an in-progress mp4 reports `moov atom not found` and looks corrupt.
 - **This display is HiDPI at 2x.** A 2560-wide window request produces a
   5120-wide window, and GUI element coordinates are double their logical values.
+- **Gazebo's VideoRecorder asks where to save when you press stop**, rather than
+  writing a fixed path. The dialog runs inside the container, so the paths it
+  offers are the *container's* filesystem — nothing appears on the host. Find the
+  file by mtime afterwards and `docker cp` it out.
 
 Anticipated, not yet hit (Phases 4–5):
 
@@ -868,6 +888,7 @@ wiped by a `git submodule update` without warning (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-31 | Gazebo's own VideoRecorder measured at **5.6 unique fps**, against 1.4 for `xwd` and 0.8 for Xvfb — now the recommended method. `record_lockstep.sh` handles its save dialog |
 | 2026-08-31 | Recording now renders on the desktop's NVIDIA GPU and captures via `xwd` (`CAPTURE=xwd`) — sharp instead of pixelated, correct duration and playback speed. Installed the NVIDIA container toolkit. Added a helper for Gazebo's own recorder |
 | 2026-08-29 | **Phase 4 step 1 done** — `MOTOR_FAILURE_SET` (id 11070) and the `MOTOR_FAILURE_TYPE` enum added to `ardupilotmega.xml` by hand; 4-byte payload, CRC-extra 97, verified by running mavgen over the edited dialect. Added `patches/` with `make_patches.sh` / `apply_patches.sh`, round-trip tested. Recorded three new §7 Gotchas: the validator fails on the pristine file, a backslash in a `<description>` becomes an escape, and the indentation convention |
 | 2026-08-30 | **Phase 4 step 2 done** — `./waf copter` succeeded (4m16s); `mavlink_msg_motor_failure_set.h` in the build tree carries id 11070, `_LEN 4`, `_CRC 97`. Corrected the standalone-mavgen command in §8 Next actions: the invocation and the flag were both wrong (§10 Troubleshooting log). Moved §11 Glossary to the end of the file — it had been inserted mid-§10, stranding five entries after it |

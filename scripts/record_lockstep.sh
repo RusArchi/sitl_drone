@@ -100,32 +100,48 @@ cat <<'BANNER'
 
 --------------------------------------------------------------------------
   Click the SAME grey square again to STOP recording.
-  Gazebo then finalises the file, which can take a few seconds.
+
+  Gazebo then opens a SAVE dialog. It is running inside the container, so
+  the paths it shows are the CONTAINER's filesystem, not yours. Save
+  anywhere -- the default /home/rusik is fine, any name will do. This
+  script searches for whatever you saved and copies it out.
+
+  Finalising the file can take several seconds after you hit Save.
 --------------------------------------------------------------------------
 BANNER
-read -r -p "Press Enter here once you have clicked stop... " _
+read -r -p "Press Enter here once you have saved the file... " _
 
 log "collecting the recording"
 mkdir -p "$OUT_DIR"
 sleep 3
-if d 'test -s ~/ign_recording.mp4'; then
-    docker cp sitl_drone:/home/rusik/ign_recording.mp4 "$OUT_DIR/lockstep-$STAMP.mp4"
-    d 'rm -f ~/ign_recording.mp4'
-    F="$OUT_DIR/lockstep-$STAMP.mp4"
-    log "saved: $F"
-    # The number that matters is UNIQUE frames -- total frames says nothing when
-    # a capture duplicates them.
-    tot=$(ffmpeg -y -v info -i "$F" -an -f null - 2>&1 | grep -oE 'frame=\s*[0-9]+' | tail -1 | grep -oE '[0-9]+')
-    uniq=$(ffmpeg -y -v info -i "$F" -vf mpdecimate -an -f null - 2>&1 | grep -oE 'frame=\s*[0-9]+' | tail -1 | grep -oE '[0-9]+')
-    dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$F" | cut -d. -f1)
+
+# The stop button opens a save dialog rather than writing a fixed path, so the
+# file's name and location are whatever was typed. Find the newest video the
+# container has written since this run started instead of assuming a name.
+REC="$(docker exec sitl_drone bash -lc \
+    'find / -xdev \( -name "*.mp4" -o -name "*.ogv" \) -newermt "-45 minutes" 2>/dev/null \
+     | grep -v /workspace/ | xargs -r ls -t 2>/dev/null | head -1' || true)"
+
+if [[ -n "$REC" ]]; then
+    DEST="$OUT_DIR/lockstep-$STAMP.${REC##*.}"
+    docker cp "sitl_drone:$REC" "$DEST"
+    docker exec sitl_drone bash -lc "rm -f '$REC'" || true
+    log "saved: $DEST   (was $REC inside the container)"
+
+    # Unique frames, not total: a capture that samples the screen duplicates
+    # frames, and only unique ones are motion the viewer sees.
+    tot=$(ffmpeg -y -v info -i "$DEST" -an -f null - 2>&1 | grep -oE 'frame=\s*[0-9]+' | tail -1 | grep -oE '[0-9]+')
+    uniq=$(ffmpeg -y -v info -i "$DEST" -vf mpdecimate -an -f null - 2>&1 | grep -oE 'frame=\s*[0-9]+' | tail -1 | grep -oE '[0-9]+')
+    dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$DEST" | cut -d. -f1)
     printf '    %sx%s  %ss  total %s  unique %s\n' \
-        "$(ffprobe -v error -show_entries stream=width -of csv=p=0 "$F")" \
-        "$(ffprobe -v error -show_entries stream=height -of csv=p=0 "$F")" \
+        "$(ffprobe -v error -show_entries stream=width -of csv=p=0 "$DEST")" \
+        "$(ffprobe -v error -show_entries stream=height -of csv=p=0 "$DEST")" \
         "$dur" "$tot" "$uniq"
-    python3 -c "print(f'    -> {int($uniq)/max(1,int($dur)):.1f} unique fps (xwd capture managed 1.4)')"
+    python3 -c "print(f'    -> {int($uniq)/max(1,int($dur)):.1f} unique fps (xwd managed 1.4, Xvfb 0.8)')"
 else
-    echo "no recording found at ~/ign_recording.mp4 inside the container." >&2
-    echo "If the button never turned into a stop button, the format click did not register." >&2
+    echo "no video found inside the container." >&2
+    echo "If the save dialog is still open, save it and re-run just the copy:" >&2
+    echo "  docker exec sitl_drone bash -lc 'ls -t ~/*.mp4 | head -1'" >&2
 fi
 
 log "shutting the simulation down"
