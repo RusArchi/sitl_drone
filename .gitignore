@@ -3,3 +3,7 @@
 .hermes-state.md
 recordings/
 recordings/_archive/
+
+# python bytecode from the MAVProxy module
+__pycache__/
+*.pyc

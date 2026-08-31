@@ -1,0 +1,47 @@
+diff --git a/ArduCopter/GCS_MAVLink_Copter.cpp b/ArduCopter/GCS_MAVLink_Copter.cpp
+index 4163cb6f38..0756f6582c 100644
+--- a/ArduCopter/GCS_MAVLink_Copter.cpp
++++ b/ArduCopter/GCS_MAVLink_Copter.cpp
+@@ -1176,6 +1176,17 @@ void GCS_MAVLINK_Copter::handle_message_set_position_target_global_int(const mav
+ }
+ #endif  // MODE_GUIDED_ENABLED
+ 
++// custom motor failure message handle by Rusik:
++void GCS_MAVLINK_Copter::handle_message_motor_failure_set(const mavlink_message_t &msg)
++{
++    // decode packet
++    mavlink_motor_failure_set_t packet;
++    mavlink_msg_motor_failure_set_decode(&msg, &packet);
++
++    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "MOTOR_FAILURE_SET: motor %u type %u",
++                  (unsigned)packet.motor, (unsigned)packet.failure_type);
++}
++
+ void GCS_MAVLINK_Copter::handle_message(const mavlink_message_t &msg)
+ {
+ 
+@@ -1197,6 +1208,10 @@ void GCS_MAVLINK_Copter::handle_message(const mavlink_message_t &msg)
+         copter.g2.toy_mode.handle_message(msg);
+         break;
+ #endif
++    case MAVLINK_MSG_ID_MOTOR_FAILURE_SET:
++        handle_message_motor_failure_set(msg);
++        break;
++        
+     default:
+         GCS_MAVLINK::handle_message(msg);
+         break;
+diff --git a/ArduCopter/GCS_MAVLink_Copter.h b/ArduCopter/GCS_MAVLink_Copter.h
+index 4e643b7586..f095eaca61 100644
+--- a/ArduCopter/GCS_MAVLink_Copter.h
++++ b/ArduCopter/GCS_MAVLink_Copter.h
+@@ -41,6 +41,9 @@ protected:
+     void handle_message_set_attitude_target(const mavlink_message_t &msg);
+     void handle_message_set_position_target_global_int(const mavlink_message_t &msg);
+     void handle_message_set_position_target_local_ned(const mavlink_message_t &msg);
++    // custom motor failure message injection
++    void handle_message_motor_failure_set(const mavlink_message_t &msg);
++
+ 
+     void handle_landing_target(const mavlink_landing_target_t &packet, uint32_t timestamp_ms) override;
+ 
