@@ -7,7 +7,7 @@
 >
 > Update rules: see [CLAUDE.md](CLAUDE.md).
 
-**Last updated:** 2026-08-30
+**Last updated:** 2026-08-31
 **Branch:** `claude/ardupilot-motor-control-gazebo-84hfq8`
 **Upstream:** https://github.com/RusArchi/sitl_drone
 
@@ -730,6 +730,22 @@ Do not rediscover these.
   2 for `<enums>`/`<messages>`, 4 for `<enum>`/`<message>`, 6 for
   `<entry>`/`<field>`, 8 for a `<description>` inside an entry.
 
+- **`ffprobe`'s frame rate is playback, not motion.** A capture that samples the
+  screen on a timer records duplicates when the GUI redraws slowly. Measure with
+  `ffmpeg -vf mpdecimate -f null -` and compare unique frames against total —
+  2103 total / 57 unique was 0.8 fps of real motion reported as "30 fps".
+- **`pkill -f` matches the shell that invoked it.** Inside `bash -c '… pkill -f
+  "gz sim" …'` the pattern appears in that shell's own command line, so it kills
+  itself; under `set -e` the script then aborts with no output. Bracket the first
+  character: `"[g]z sim"`.
+- **Gazebo's VideoRecorder must keep `<lockstep>false</lockstep>`.** Lockstep
+  waits for the server, which the ArduPilot plugin is already blocking on SITL —
+  they deadlock and the GUI hangs.
+- **A file still being written cannot be judged.** ffmpeg writes the `moov` atom
+  last, so an in-progress mp4 reports `moov atom not found` and looks corrupt.
+- **This display is HiDPI at 2x.** A 2560-wide window request produces a
+  5120-wide window, and GUI element coordinates are double their logical values.
+
 Anticipated, not yet hit (Phases 4–5):
 
 - **pymavlink will not know the new message.** The venv's pymavlink comes from
@@ -852,6 +868,7 @@ wiped by a `git submodule update` without warning (§3 Repo layout).
 
 | Date | Change |
 |---|---|
+| 2026-08-31 | Recording now renders on the desktop's NVIDIA GPU and captures via `xwd` (`CAPTURE=xwd`) — sharp instead of pixelated, correct duration and playback speed. Installed the NVIDIA container toolkit. Added a helper for Gazebo's own recorder |
 | 2026-08-29 | **Phase 4 step 1 done** — `MOTOR_FAILURE_SET` (id 11070) and the `MOTOR_FAILURE_TYPE` enum added to `ardupilotmega.xml` by hand; 4-byte payload, CRC-extra 97, verified by running mavgen over the edited dialect. Added `patches/` with `make_patches.sh` / `apply_patches.sh`, round-trip tested. Recorded three new §7 Gotchas: the validator fails on the pristine file, a backslash in a `<description>` becomes an escape, and the indentation convention |
 | 2026-08-30 | **Phase 4 step 2 done** — `./waf copter` succeeded (4m16s); `mavlink_msg_motor_failure_set.h` in the build tree carries id 11070, `_LEN 4`, `_CRC 97`. Corrected the standalone-mavgen command in §8 Next actions: the invocation and the flag were both wrong (§10 Troubleshooting log). Moved §11 Glossary to the end of the file — it had been inserted mid-§10, stranding five entries after it |
 | 2026-08-30 | **Phase 4 step 3 done** — pymavlink regenerated from the edited dialect into the venv. Python reports id 11070, `crc_extra` 97, fields in order — matching the C header. Pack/parse round-trip verified |
@@ -1170,3 +1187,72 @@ it is a paraphrase and should be treated as such.
 | **Motor index vs. test order** | Two different 1–4 numberings. This project uses the **output-channel** one (1–4 → `SERVO1`–`SERVO4`). They agree only for motor 1 (§5 Technical ground truth) | `AP_MotorsMatrix.cpp:592` |
 | **JSON backend** | The UDP link carrying servo outputs to Gazebo and vehicle state back. Ports 9002/9003 (§4 Environment) | `--model JSON` |
 | **RTF** | Real-time factor. Gazebo's sim-seconds per wall-second; 0.47 here, and physics-bound (§4 Environment) | Gazebo |
+
+### 2026-08-31 — reported 60 fps for a video that moved at 0.8 fps
+
+- **Believed:** raising the capture rate to 30 fps and re-timing the output had
+  produced a smooth 60 fps recording. `ffprobe` said `60/1`, and the frame count
+  had gone from 365 to 1422, so both numbers agreed with me.
+- **Actually:** `ffprobe` reports the container's *playback* rate, not how often
+  the picture changes. `ffmpeg -vf mpdecimate` showed **57 unique frames out of
+  2103** — 0.8 fps of real motion, the rest duplicates of a slow-redrawing GUI.
+  Ruslan watched the file and said it was choppy, which it was.
+- **Lesson:** measure the property being claimed, not a proxy that correlates
+  with it. For video, "frames per second" and "changes per second" are different
+  quantities, and only the second one is what a viewer sees.
+- **Cost:** several recordings and a wrong recommendation to raise `FPS`, which
+  could only ever have manufactured more duplicates.
+
+### 2026-08-31 — rejected the GPU using a measurement that did not bear on the question
+
+- **Believed:** GPU passthrough was unnecessary. Measured RTF with and without
+  the GUI, found it identical at ~0.47, and concluded rendering was free and
+  physics was the bottleneck. Recorded that as a decision in §6 Decisions.
+- **Actually:** RTF measures how fast simulated time advances. It says nothing
+  about how often a frame is drawn. Physics was never the bottleneck for
+  *smoothness* — the renderer was, and that is exactly what a GPU fixes. The
+  right measurement was unique frames per second, which was never taken.
+- **Lesson:** before using a number as evidence, check that it is a measurement
+  of the thing in question. A confidently-taken measurement of the wrong quantity
+  is more misleading than no measurement, because it forecloses the question.
+
+### 2026-08-31 — deleted a working feature after inspecting a half-written file
+
+- **Believed:** the xwd capture path was broken. Its output failed to open —
+  `moov atom not found` — so the mode was reverted out of the script as a
+  dead end.
+- **Actually:** the file was still being written when it was checked. It
+  finalised fine, and Ruslan later picked that very recording as the best one so
+  far, because it was the only GPU-rendered one. The mode had to be restored.
+- **Lesson:** an artefact still being produced cannot be judged. Wait for the
+  writer to exit before opening its output. This was the second time in one
+  session that a premature check produced a false verdict — the first was a
+  262-byte mp4 called corrupt for the same reason.
+
+### 2026-08-31 — a cleanup line killed the script that was running it
+
+- **Believed:** `record_lockstep.sh` was failing somewhere in Gazebo startup. It
+  printed "clearing anything left running" and exited with no error and nothing
+  on screen.
+- **Actually:** the cleanup ran as `bash -lc '… pkill -9 -f "gz sim" …'`, so the
+  shell's own command line contained the pattern. `pkill -f` matched that shell
+  and killed it; `docker exec` returned non-zero and `set -e` aborted silently.
+  Confirmed by racing the two forms: the plain pattern never reaches its next
+  `echo`, `"[g]z sim"` does.
+- **Lesson:** `pkill -f` matches command lines, including the one that invoked
+  it. Inside `bash -c`, always bracket the first character. A `set -e` script
+  that dies inside a helper looks like the helper's fault, not the pattern's.
+
+### 2026-08-31 — turned a shipped default on and deadlocked the GUI
+
+- **Believed:** `<lockstep>true</lockstep>` in Gazebo's VideoRecorder was
+  strictly better than the `false` in the stock example — it makes the simulation
+  wait for each frame, so duplicates become impossible.
+- **Actually:** lockstep blocks the GUI until the server delivers a frame, and
+  the ArduPilot plugin already blocks the server waiting for SITL packets. Each
+  waits for the other, the Qt event loop stops, and GNOME offers to force-quit
+  "Gazebo GUI". The stock world ships `false` because of this, not by oversight.
+- **Lesson:** a conservative default in a shipped example is often encoding a
+  constraint rather than a missed optimisation. Changing one is a hypothesis to
+  test, not an improvement to assume — especially in a co-simulation where a
+  second component owns its own clock.
