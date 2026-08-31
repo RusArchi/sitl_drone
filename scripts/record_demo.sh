@@ -83,7 +83,20 @@ mkdir -p "$RUN_DIR"
     echo "  MOTOR=${MOTOR:-}"
 } > "$RUN_DIR/$RUN_ID-run.txt"
 
-if [[ "${VISIBLE:-0}" == "1" ]]; then
+if [[ "${CAPTURE:-x11grab}" == "xwd" ]]; then
+    # Render on the REAL display. It is NVIDIA-backed, so Gazebo gets hardware
+    # OpenGL instead of llvmpipe -- the picture is sharper and there is far more
+    # motion in it (213 unique frames against 57 for an Xvfb capture).
+    #
+    # ffmpeg's x11grab cannot read an XWayland root window (BadMatch), but xwd
+    # can read a specific window and ffmpeg has an xwd_pipe demuxer, so frames
+    # stream in without the root window ever being touched.
+    #
+    # Needs an unlocked, logged-in session on seat0:
+    #   loginctl unlock-session $(loginctl list-sessions --no-legend | awk '"'"'$4=="seat0"{print $1}'"'"')
+    [[ -n "${DISPLAY:-}" ]] || { echo "CAPTURE=xwd needs a real DISPLAY; use run.sh so it is wired in" >&2; exit 1; }
+    log "rendering on $DISPLAY (hardware GL) and capturing with xwd"
+elif [[ "${VISIBLE:-0}" == "1" ]]; then
     [[ -n "${DISPLAY:-}" ]] || { echo "VISIBLE=1 needs DISPLAY; recreate via run.sh" >&2; exit 1; }
     log "rendering on the desktop ($DISPLAY) — no recording"
 else
@@ -113,7 +126,10 @@ cleanup() {
     for f in /tmp/sitl.log /tmp/gz_sim.log /tmp/ArduCopter.log; do
         [[ -f "$f" ]] && cp -f "$f" "$RUN_DIR/$RUN_ID-$(basename "$f")" 2>/dev/null || true
     done
+    # Stop the frame source first, then let ffmpeg drain and finalise.
+    [[ -n "${XWD_PID:-}" ]] && kill "$XWD_PID" 2>/dev/null || true
     [[ -n "${FF_PID:-}" ]] && kill -INT "$FF_PID" 2>/dev/null && wait "$FF_PID" 2>/dev/null || true
+    [[ -n "${FIFO:-}" ]] && rm -f "$FIFO" 2>/dev/null || true
     [[ -n "${XVFB_PID:-}" ]] && kill "$XVFB_PID" 2>/dev/null || true
     pkill -f 'sim_vehicle.py' 2>/dev/null || true
     pkill -f 'bin/arducopter' 2>/dev/null || true
@@ -301,12 +317,33 @@ fi
 xdotool windowsize "$WIN" "$W" "$H" 2>/dev/null || true
 sleep 2
 
+if [[ "${CAPTURE:-x11grab}" == "xwd" ]]; then
+    log "recording (xwd stream) -> $OUT"
+    # Through a FIFO, not a pipeline in a subshell: with a subshell $! is the
+    # wrapper's pid, so cleanup signalled the wrapper and ffmpeg died without
+    # writing its moov atom, leaving an unplayable file.
+    FIFO="/tmp/xwd-$RUN_ID.fifo"
+    rm -f "$FIFO"; mkfifo "$FIFO"
+    ( while :; do xwd -id "$WIN" 2>/dev/null || break; done > "$FIFO" ) &
+    XWD_PID=$!
+    # -use_wallclock_as_timestamps: xwd delivers frames as fast as the GPU and
+    # the X server manage, which is NOT $FPS. Tagging them at a fixed rate makes
+    # the video play at the wrong speed -- 233 frames from a 38 s flight became a
+    # 15 s clip running ~2.5x too fast. Timestamping by arrival keeps wall-clock
+    # truth, and the RTF re-timing afterwards converts that to simulation speed.
+    ffmpeg -hide_banner -loglevel error -y -use_wallclock_as_timestamps 1 \
+        -f xwd_pipe -i "$FIFO" -vsync vfr \
+        -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p "$OUT" &
+    FF_PID=$!
+    sleep 2
+else
 log "recording -> $OUT"
 ffmpeg -hide_banner -loglevel error -y \
     -f x11grab -framerate "$FPS" -video_size "${W}x${H}" -i "${DISPLAY}+0,0" \
     -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
     "$OUT" &
 FF_PID=$!
+fi
 fi
 sleep 2
 
