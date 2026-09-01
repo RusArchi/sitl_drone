@@ -142,6 +142,10 @@ trades thrust for attitude authority, by design.
 1.2 s later. Comparable to the Phase 3 `SIM_ENGINE_FAIL` baseline, but the kill
 travelled the full path through `rc_write()`.
 
+**Illustrated walkthrough** of the whole path, the two library edits and the
+measured PWM: <https://claude.ai/code/artifact/3d9757ba-90af-4ed3-b99b-aa20af97738b>
+(private to Ruslan's account unless shared from the page).
+
 ### Resuming in a new session — read this first
 
 The XML edit lives in `~/ardupilot/modules/mavlink`, a git submodule that **this
