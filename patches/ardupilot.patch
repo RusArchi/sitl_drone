@@ -1,17 +1,27 @@
 diff --git a/ArduCopter/GCS_MAVLink_Copter.cpp b/ArduCopter/GCS_MAVLink_Copter.cpp
-index 4163cb6f38..0756f6582c 100644
+index 4163cb6f38..a867c5970f 100644
 --- a/ArduCopter/GCS_MAVLink_Copter.cpp
 +++ b/ArduCopter/GCS_MAVLink_Copter.cpp
-@@ -1176,6 +1176,17 @@ void GCS_MAVLINK_Copter::handle_message_set_position_target_global_int(const mav
+@@ -1176,6 +1176,27 @@ void GCS_MAVLINK_Copter::handle_message_set_position_target_global_int(const mav
  }
  #endif  // MODE_GUIDED_ENABLED
  
-+// custom motor failure message handle by Rusik:
++// Custom message handle: Motor failure injection
 +void GCS_MAVLINK_Copter::handle_message_motor_failure_set(const mavlink_message_t &msg)
 +{
 +    // decode packet
 +    mavlink_motor_failure_set_t packet;
 +    mavlink_msg_motor_failure_set_decode(&msg, &packet);
++    // apply
++    if (packet.motor < 1 || packet.motor > AP_MOTORS_MAX_NUM_MOTORS ||
++        !copter.motors->is_motor_enabled(packet.motor - 1)) {
++        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "MOTOR_FAILURE_SET: bad motor %u",
++                      (unsigned)packet.motor);
++        return;
++    }
++
++    const bool failed = (packet.failure_type != MOTOR_FAILURE_TYPE_NONE);
++    copter.motors->set_motor_failed(packet.motor-1, failed);
 +
 +    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "MOTOR_FAILURE_SET: motor %u type %u",
 +                  (unsigned)packet.motor, (unsigned)packet.failure_type);
@@ -20,28 +30,96 @@ index 4163cb6f38..0756f6582c 100644
  void GCS_MAVLINK_Copter::handle_message(const mavlink_message_t &msg)
  {
  
-@@ -1197,6 +1208,10 @@ void GCS_MAVLINK_Copter::handle_message(const mavlink_message_t &msg)
+@@ -1197,6 +1218,9 @@ void GCS_MAVLINK_Copter::handle_message(const mavlink_message_t &msg)
          copter.g2.toy_mode.handle_message(msg);
          break;
  #endif
 +    case MAVLINK_MSG_ID_MOTOR_FAILURE_SET:
 +        handle_message_motor_failure_set(msg);
 +        break;
-+        
      default:
          GCS_MAVLINK::handle_message(msg);
          break;
 diff --git a/ArduCopter/GCS_MAVLink_Copter.h b/ArduCopter/GCS_MAVLink_Copter.h
-index 4e643b7586..f095eaca61 100644
+index 4e643b7586..5e1ea2055b 100644
 --- a/ArduCopter/GCS_MAVLink_Copter.h
 +++ b/ArduCopter/GCS_MAVLink_Copter.h
-@@ -41,6 +41,9 @@ protected:
+@@ -41,6 +41,8 @@ protected:
      void handle_message_set_attitude_target(const mavlink_message_t &msg);
      void handle_message_set_position_target_global_int(const mavlink_message_t &msg);
      void handle_message_set_position_target_local_ned(const mavlink_message_t &msg);
 +    // custom motor failure message injection
 +    void handle_message_motor_failure_set(const mavlink_message_t &msg);
-+
  
      void handle_landing_target(const mavlink_landing_target_t &packet, uint32_t timestamp_ms) override;
  
+diff --git a/libraries/AP_Motors/AP_MotorsMatrix.cpp b/libraries/AP_Motors/AP_MotorsMatrix.cpp
+index 7ebad14768..8825365d18 100644
+--- a/libraries/AP_Motors/AP_MotorsMatrix.cpp
++++ b/libraries/AP_Motors/AP_MotorsMatrix.cpp
+@@ -177,7 +177,12 @@ void AP_MotorsMatrix::output_to_motors()
+     // convert output to PWM and send to each motor
+     for (i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {
+         if (motor_enabled[i]) {
+-            rc_write(i, output_to_pwm(_actuator[i]));
++            if (_motor_fail_mask & (1U << i)) {
++                // By Ruslan. Check the motor index against the motor fail mask.
++                rc_write(i, get_pwm_output_min());
++            } else {
++                rc_write(i, output_to_pwm(_actuator[i]));
++            }
+         }
+     }
+ }
+diff --git a/libraries/AP_Motors/AP_MotorsMulticopter.cpp b/libraries/AP_Motors/AP_MotorsMulticopter.cpp
+index 27519e66b5..72e26f00a4 100644
+--- a/libraries/AP_Motors/AP_MotorsMulticopter.cpp
++++ b/libraries/AP_Motors/AP_MotorsMulticopter.cpp
+@@ -932,6 +932,21 @@ void AP_MotorsMulticopter::output_motor_mask(float thrust, uint32_t mask, float
+     }
+ }
+ 
++// By Ruslan:
++// fail or restore a single motor output (0-based index)
++void AP_MotorsMulticopter::set_motor_failed(uint8_t motor_index, bool failed)
++{
++    if (motor_index >= AP_MOTORS_MAX_NUM_MOTORS){
++        //supplied index is bigger than the actual number of motors
++        return;
++    }
++    if (failed) {
++        _motor_fail_mask |= (1U << motor_index);
++    } else {
++        _motor_fail_mask &= ~(1U << motor_index);
++    }
++}
++
+ // get_motor_mask - returns a bitmask of which outputs are being used for motors (1 means being used)
+ // this can be used to ensure other pwm outputs (i.e. for servos) do not conflict
+ uint32_t AP_MotorsMulticopter::get_motor_mask()
+diff --git a/libraries/AP_Motors/AP_MotorsMulticopter.h b/libraries/AP_Motors/AP_MotorsMulticopter.h
+index 6c983f18a9..1a3ea9e3cf 100644
+--- a/libraries/AP_Motors/AP_MotorsMulticopter.h
++++ b/libraries/AP_Motors/AP_MotorsMulticopter.h
+@@ -73,6 +73,13 @@ public:
+     int16_t             get_pwm_output_min() const { return _pwm_min; }
+     int16_t             get_pwm_output_max() const { return _pwm_max; }
+     
++    //Custom addition:
++    //fail or restore a single motor output (0-based index)
++    //A failed motor is commanded to minimum PWM in output_to_motors(),
++    //downstream of the mixer, so the stability patch cannot undo it.
++    void set_motor_failed(uint8_t motor_index, bool failed);
++    uint32_t get_motor_fail_mask() const { return _motor_fail_mask; }
++
+     // parameter check for MOT_PWM_MIN/MAX, returns true if parameters are valid
+     bool check_mot_pwm_params() const;
+ 
+@@ -205,6 +212,7 @@ protected:
+ 
+     // motor output variables
+     bool                motor_enabled[AP_MOTORS_MAX_NUM_MOTORS];    // true if motor is enabled
++    uint32_t            _motor_fail_mask = 0; // By Ruslan. bit per motor index; 1 = commanded to stop
+ 
+     // spool variables
+     float               _spin_up_ratio;         // normalized spin scalar [0..1] between 0 and spin_min (used for ground-idle ramp)

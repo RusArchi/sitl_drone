@@ -76,8 +76,8 @@ the new message reserves a `failure_type` field it does not yet use.
 | 2 | ArduCopter SITL flying an iris quad in Gazebo, with visualisation | **Done** 2026-08-26 |
 | 3 | Baseline: kill a rotor with `SIM_ENGINE_FAIL` (no code change) | **Done** 2026-08-27 |
 | 4 | Define the new message in `ardupilotmega.xml`; rebuild ArduCopter **and** pymavlink; prove round-trip | **Done 2026-09-01** — sent from MAVProxy, decoded by Copter, echoed back |
-| 5 | Handle it in Copter; propagate motor index down to the ESC output | **Not started** |
-| 6 | Send from MAVProxy in flight; record takeoff → command → crash | **Not started** |
+| 5 | Handle it in Copter; propagate motor index down to the ESC output | **Done 2026-09-02** — measured: the commanded channel drops to 1000 us and recovers |
+| 6 | Send from MAVProxy in flight; record takeoff → command → crash | **Done 2026-09-02** — `recordings/fly_motorfail-20260902-013305/` |
 
 Phase 3 is not in the assignment. It is kept as a **sim-stack smoke test and
 comparison baseline** — it proves the mixer→PWM→Gazebo chain works before any
@@ -86,7 +86,8 @@ environment.
 
 ## 2. Current status
 
-**Phase 4 complete — `MOTOR_FAILURE_SET` travels end to end, GCS to Copter.**
+**Phases 5 and 6 complete — a motor stops on command and the aircraft falls, on
+video, with the command visible in the MAVProxy console.**
 
 `MOTOR_FAILURE_SET` (id 11070) and the `MOTOR_FAILURE_TYPE` enum were added to
 `ardupilotmega.xml` on 2026-08-29 — 16 lines, hand-written by Ruslan, the whole
@@ -101,20 +102,45 @@ agree, which is the one thing in Phase 4 that fails silently.
 
 The receiving end is `GCS_MAVLINK_Copter::handle_message_motor_failure_set()` in
 `ArduCopter/GCS_MAVLink_Copter.cpp`, reached by a `case` in `handle_message()`.
-It decodes the packet and echoes it with `GCS_SEND_TEXT` — **nothing more; the
-aircraft still ignores the message.** Written by Ruslan 2026-09-01.
+It decodes the packet, rejects a motor number that is out of range or not
+enabled on this frame, and calls the motors library. Written by Ruslan
+2026-09-01/02.
+
+The kill itself is three edits in `libraries/AP_Motors/` (all Ruslan's,
+2026-09-02):
+
+- `AP_MotorsMulticopter.h` — `set_motor_failed(index, failed)` public, and a
+  `uint32_t _motor_fail_mask` with an in-class `= 0` initialiser.
+- `AP_MotorsMulticopter.cpp` — the setter, guarded against
+  `AP_MOTORS_MAX_NUM_MOTORS` because `1U << index` past the width is undefined
+  behaviour.
+- `AP_MotorsMatrix.cpp` — in the final loop of `output_to_motors()`, a failed
+  motor gets `rc_write(i, get_pwm_output_min())` instead of
+  `output_to_pwm(_actuator[i])`. `_actuator[i]` is left alone, so the controller
+  keeps computing a demand it never learns is being ignored.
 
 Sending is [mavproxy_modules/motorfail.py](mavproxy_modules/motorfail.py), a
 MAVProxy module (`motorfail <1-4> [on|off]`). MAVProxy cannot send an arbitrary
 message without one.
 
-Verified 2026-09-01 against SITL, no Gazebo: `motorfail 4` printed
-`sent motor 4 type 1 to 1/1`, and `AP: MOTOR_FAILURE_SET: motor 4 type 1` came
-back from Copter. Restore (`type 0`) and the argument rejections work too.
-Command in §8 Next actions step 4.
+**Ground test, 2026-09-02** ([scripts/test_motorfail_ground.py](scripts/test_motorfail_ground.py),
+SITL only). Hovering, then `motorfail 3`:
 
-**Not yet done:** nothing has been *flown* against the new binary, and no motor
-responds to the message. That is Phase 5.
+| stage | ch1 | ch2 | ch3 | ch4 |
+|---|---|---|---|---|
+| all healthy | 1600.7 | 1600.8 | 1601.1 | 1601.1 |
+| motor 3 stopped | 1584.1 | 1528.0 | **1000.0** | 1372.6 |
+| restored | 1637.7 | 1623.6 | 1707.0 | 1652.9 |
+
+Channel 3 goes to exactly `MOT_PWM_MIN` and recovers. Note the survivors do
+**not** all rise: motor 3 is front left, and its diagonal opposite motor 4 (back
+right) sheds the most thrust to keep roll and pitch balanced. The stability patch
+trades thrust for attitude authority, by design.
+
+**Flight, 2026-09-02** — `recordings/fly_motorfail-20260902-013305/`. Take off to
+4 m, cruise north, `motorfail 1` typed into the MAVProxy pane on camera, impact
+1.2 s later. Comparable to the Phase 3 `SIM_ENGINE_FAIL` baseline, but the kill
+travelled the full path through `rc_write()`.
 
 ### Resuming in a new session — read this first
 
@@ -207,6 +233,8 @@ Next action is Phase 4 (§8 Next actions).
 | [scripts/make_patches.sh](scripts/make_patches.sh) | Capture the ArduPilot-tree changes into `patches/`; run after any edit there |
 | [scripts/apply_patches.sh](scripts/apply_patches.sh) | Re-apply `patches/` to the ArduPilot tree after a fresh clone or a wiped submodule |
 | [mavproxy_modules/motorfail.py](mavproxy_modules/motorfail.py) | MAVProxy module: `motorfail <1-4> [on\|off]` sends `MOTOR_FAILURE_SET`. Put the directory on `PYTHONPATH`, then `module load motorfail` |
+| [scripts/fly_motorfail.py](scripts/fly_motorfail.py) | Phase 5/6 flight: take off, cruise, kill a motor with `MOTOR_FAILURE_SET`, log the fall. `KILL_VIA=module` types the command into the recorder's MAVProxy pane so it is visible on camera |
+| [scripts/test_motorfail_ground.py](scripts/test_motorfail_ground.py) | Phase 5 ground test: hover, sample `SERVO_OUTPUT_RAW`, fail a motor, sample again, restore. Isolates "does the output change" from "does it fall" |
 | `patches/mavlink.patch` | The `ardupilotmega.xml` change — `MOTOR_FAILURE_SET` + `MOTOR_FAILURE_TYPE` |
 | `patches/BASE` | The two commits the patches were made against, so they can be rebased knowingly |
 | [scripts/setup_env.sh](scripts/setup_env.sh) | Host provisioner; `--check` verifies without changing anything |
@@ -464,8 +492,8 @@ The signal path the assignment asks for, end to end:
 | 2 | C headers | regenerated automatically by waf's `mavgen` task (`Tools/ardupilotwaf/mavgen.py`) — editing the XML and rebuilding is enough. **Done 2026-08-30**, `_CRC 97` |
 | 3 | Python side (MAVProxy / script) | **rebuild required** — a new msgid changes the wire format, so the venv's PyPI `pymavlink` must be replaced by one generated from the edited XML (§7 Gotchas). **Done 2026-08-30**, `crc_extra` 97 — matches |
 | 4 | Copter receives it | `GCS_MAVLINK_Copter::handle_message()` — a `case` in the `msg.msgid` switch calling `handle_message_motor_failure_set()`. Unhandled ids fall through to the base class and are **silently dropped**. **Done 2026-09-01**, echoes with `GCS_SEND_TEXT` |
-| 5 | Stored state | new setter on `AP_MotorsMatrix` / `AP_MotorsMulticopter` |
-| 6 | **Applied to ESC output** | `AP_Motors/AP_MotorsMatrix.cpp:180`, the `rc_write()` call inside `output_to_motors()` |
+| 5 | Stored state | `AP_MotorsMulticopter::set_motor_failed()` sets a bit in `_motor_fail_mask`. **Done 2026-09-02** |
+| 6 | **Applied to ESC output** | the `rc_write()` call inside `AP_MotorsMatrix::output_to_motors()` — a failed motor gets `get_pwm_output_min()`. **Done 2026-09-02**, measured at exactly 1000 us |
 | 7 | SITL: PWM → physics | `AP_HAL_SITL/SITL_State.cpp:287` `_simulator_servos()` (no change needed) |
 
 **Injection point (step 6).** `rc_write()` inside `output_to_motors()` is *after*
@@ -647,6 +675,11 @@ comparison baseline for the commanded kill built in Phases 4–5.
 | GUI wiring is conditional on `DISPLAY`, not a separate compose file | One code path serves both headless iteration and on-screen demo; nothing to forget to switch |
 | `ffmpeg`/`mesa-utils` added as a late Dockerfile layer | Keeps the ~10-minute prereq layer cached; this router's apt DNS is flaky (§7 Gotchas) |
 | Keep Phase 3 (`SIM_ENGINE_FAIL` baseline) despite it not being in the assignment | Proves the sim stack independently, so a Phase 5 failure is attributable to the patch and not the environment |
+| A stopped motor is written `get_pwm_output_min()`, not literal 0 | That is the throttle-off command a real ESC receives and obeys. Literal 0 is "no pulse at all", which models a cut signal wire instead. Calling `get_pwm_output_min()` directly rather than `output_to_pwm(0.0f)` also keeps the value the same in every spool state |
+| Failure state is a `uint32_t` bitmask, not a single motor index | Same code size, but two failed motors need no further change — relevant to the three-motor recovery goal (§1 Mission). Matches the `uint32_t` masks already on the class (`get_motor_mask()`, `_motor_fast_mask`) |
+| The kill overrides the PWM write, not `_actuator[i]` | The controller must keep computing what it wants the dead motor to do and never learn it is ignored — that is what makes the failure invisible to the flight code, exactly as a dead ESC would be |
+| The handler validates the motor number even though the library guard makes it safe | The library returns silently, which is right for a library and useless to an operator. `motorfail 0` underflows to index 255 and `motorfail 7` sets a bit no frame reads; both look like success without this check |
+| The demo types `motorfail 1` into the MAVProxy pane rather than sending from the flight script | The video then shows the command, the module's confirmation and the vehicle's echo — the whole chain. Falls back to a direct send if the pane or xdotool is missing, so a typing failure cannot cost a whole flight |
 
 ---
 
@@ -747,6 +780,24 @@ Do not rediscover these.
   When hand-running mavgen to check an edit, pass `--no-validate` or the error
   looks like your fault. (The `mavgen.py` script takes `--no-validate`; the
   `validate=False` keyword is the Python-API form, not a command-line flag.)
+- **SITL keeps `SIM_ENGINE_FAIL` across restarts.** Parameters live in
+  `eeprom.bin`, so a Phase 3 run leaves `SIM_ENGINE_FAIL=1` / `SIM_ENGINE_MUL=0`
+  armed. The aircraft then will not take off at all — and if it did, the crash on
+  the video would be SITL's kill rather than the one under test. Every flight
+  script here clears both first.
+- **xterm discards synthetic key events.** `xdotool type --window` silently does
+  nothing unless the terminal was started with `-xrm 'XTerm*allowSendEvents:true'`.
+  There is no error; the keystrokes simply never arrive. This is what lets a
+  command be typed into the recorder's MAVProxy pane on camera.
+- **A stale Xvfb silently changes the capture size.** `record_demo.sh` only
+  clears `/tmp/.X99-lock` when no live Xvfb is running; if one is, the new run
+  reuses that server at *its* resolution, and ffmpeg fails with "Capture area
+  WxH outside the screen size". Kill Xvfb and remove the lock between runs at
+  different resolutions.
+- **The aircraft flies *toward* the crash camera.** With the tuned pose it is a
+  speck for most of the flight and only fills the frame in the last few seconds.
+  Judging framing from a mid-flight frame says the shot is broken when it is
+  fine — sample near the impact instead. Cost: five re-shoots on 2026-09-02.
 - **An external MAVProxy module must be named `<name>.py`, not `mavproxy_<name>.py`.**
   `load_module()` tries `MAVProxy.modules.mavproxy_<name>` and then the bare
   `<name>` (`mavproxy.py:376`). The `mavproxy_` prefix is only meaningful
@@ -901,10 +952,43 @@ Anticipated, not yet hit (Phases 4–5):
       `AP: MOTOR_FAILURE_SET: motor 4 type 1`. Also verified `motorfail 2 off`
       (type 0), `motorfail status`, and rejection of `9`, `x` and an unknown
       state word. **No motor behaviour — the aircraft ignores it.**
-4. **Phase 5** — resolve the motor-numbering question (§5 Technical ground truth), add the setter and the
-   `rc_write()` check, rebuild. Verify motor N and only motor N goes to zero.
-5. **Phase 6** — fly, send `motorfail 3` in Stabilize, record takeoff → command →
-   crash. Log `RATE`, `ATT`, `MOTB`, `RCOU`; keep the video and the `.bin`.
+4. ~~**Phase 5**~~ — **done 2026-09-02.** Setter, mask and the `rc_write()`
+   override are in; the ground test measures the killed channel at exactly
+   1000 us and recovering (§2 Current status).
+
+   Re-run it with:
+
+   ```bash
+   docker exec -d sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && \
+     cd ~/ardupilot && setsid sim_vehicle.py -v ArduCopter --no-mavproxy > /tmp/sitl.log 2>&1'
+   docker exec sitl_drone bash -lc 'source ~/ardupilot/venv-ardupilot/bin/activate && \
+     python3 /workspace/sitl_drone/scripts/test_motorfail_ground.py'
+   ```
+
+5. ~~**Phase 6**~~ — **done 2026-09-02.** `recordings/fly_motorfail-20260902-013305/`.
+
+   ```bash
+   docker exec sitl_drone bash -lc 'RES=1920x1200 TELEM_COL=700 FLIGHT=fly_motorfail.py \
+     TELEM=1 MODULES=motorfail KILL_VIA=module \
+     GUI_CFG=/workspace/sitl_drone/docker/gz/gui-crash-above.config \
+     CAM_POSE="3.7 12.2 4.6 0 0.41 -2.58" CAM_MODE=static \
+     TAKEOFF_ALT=4 CRUISE_N=10 CRUISE_SPEED=2 KILL_AFTER=4 MOTOR=1 \
+     /workspace/sitl_drone/scripts/record_demo.sh'
+   ```
+
+   **Do not re-tune that camera pose from a mid-flight frame** — the aircraft
+   flies toward the camera and is only large in the last seconds (§7 Gotchas,
+   §10 Troubleshooting log).
+
+   Still open from the original Phase 6 wording: the flight was in GUIDED, not
+   Stabilize, and no `.bin` log was kept alongside the video.
+
+6. **Next** — the three-motor recovery controller (§1 Mission). ArduPilot's own
+   lost-motor machinery is the place to start: `_motor_lost_index` and
+   `_thrust_boost` in `AP_MotorsMatrix::output_armed_stabilizing()` redistribute
+   authority around a motor believed dead, and `AC_CustomControl`
+   (`libraries/AC_CustomControl/`, RC switch option 109) is the sanctioned hook
+   for a replacement attitude controller with in-flight A/B switching.
 
 Run `scripts/make_patches.sh` after **every** edit to the ArduPilot tree — that
 tree is not version-controlled here, and its `modules/mavlink` submodule can be
@@ -930,6 +1014,7 @@ wiped by a `git submodule update` without warning (§3 Repo layout).
 | 2026-08-30 | **Phase 4 step 2 done** — `./waf copter` succeeded (4m16s); `mavlink_msg_motor_failure_set.h` in the build tree carries id 11070, `_LEN 4`, `_CRC 97`. Corrected the standalone-mavgen command in §8 Next actions: the invocation and the flag were both wrong (§10 Troubleshooting log). Moved §11 Glossary to the end of the file — it had been inserted mid-§10, stranding five entries after it |
 | 2026-08-30 | **Phase 4 step 3 done** — pymavlink regenerated from the edited dialect into the venv. Python reports id 11070, `crc_extra` 97, fields in order — matching the C header. Pack/parse round-trip verified |
 | 2026-09-01 | **Phase 4 complete** — `handle_message_motor_failure_set()` added to `ArduCopter/GCS_MAVLink_Copter.cpp` (decode + `GCS_SEND_TEXT`, no motor behaviour), plus `mavproxy_modules/motorfail.py`. Verified against SITL: `motorfail 4` → `AP: MOTOR_FAILURE_SET: motor 4 type 1`, addressed 1/1. Two new §7 Gotchas: the MAVProxy module filename rule and `mavutil.mavlink` defaulting to the v1.0 `all` dialect |
+| 2026-09-02 | **Phases 5 and 6 complete** — `set_motor_failed()` + `_motor_fail_mask` in `AP_MotorsMulticopter`, applied at the `rc_write()` in `AP_MotorsMatrix::output_to_motors()`; handler now validates and calls it. Ground test measures the killed channel at exactly 1000 us and recovering. Flight recorded with the command typed into the MAVProxy pane on camera: `recordings/fly_motorfail-20260902-013305/`. Adds `scripts/fly_motorfail.py`, `scripts/test_motorfail_ground.py`, and `MODULES=` / typing support in `record_demo.sh` |
 | 2026-08-28 | Added §11 Glossary — one table defining the MAVLink, ArduPilot and Gazebo terms this file uses, so they are not re-explained inline. Placed at the end to avoid renumbering 43 cross-references |
 | 2026-08-27 | Each recording is now a self-contained directory — video, real-time cut, `run.txt` manifest, flight/MAVProxy/SITL/Gazebo logs |
 | 2026-08-27 | `set_mode` now retries (a single attempt raced the EKF and killed runs with "mode GUIDED not accepted"); added `CRUISE_SPEED`; documented every recording knob and the framing rules |
@@ -1243,6 +1328,33 @@ is append-only** — unlike the rest of the file, history here *is* the value.
 - **Lesson:** "move fast on tooling" is permission to skip *design discussion*,
   not permission to widen scope. Announce anything that starts a process or adds
   a file, even when the work itself is trivial.
+
+### 2026-09-02 — five re-shoots chasing a camera that was fine
+
+- **Believed:** the crash camera was misframed. In take after take the aircraft
+  was a speck in a corner, so I moved the camera, switched Gazebo tracking modes
+  (`look_at`, `track`), and rewrote the pose by trigonometry — five extra runs.
+- **Actually:** the pose was right all along. The aircraft flies *toward* that
+  camera and only fills the frame in the last two or three seconds. I had been
+  judging every take from a frame sampled before the kill. The take I had
+  already recorded with the original pose showed the aircraft large and tumbling
+  at t+2 s.
+- **Lesson:** when judging a recording, sample the frame at the moment the
+  recording is *about* — not a convenient one. And when a previously tuned
+  setting looks wrong, suspect the measurement before the setting.
+- **Cost:** about 40 minutes and five flights.
+
+### 2026-09-02 — the ground test blamed the aircraft for a stale parameter
+
+- **Believed:** the first Phase 5 ground run failed to take off because
+  something in the new motor code was wrong.
+- **Actually:** SITL keeps parameters in `eeprom.bin` across restarts, and a
+  Phase 3 run had left `SIM_ENGINE_FAIL=1` / `SIM_ENGINE_MUL=0` armed — motor 1
+  was already dead before the test began. `scripts/fly_fail.py` documents this
+  and clears it; the script I wrote did not.
+- **Lesson:** when writing a new script beside an existing one that does the
+  same job, read its setup steps before its main logic. The comments in
+  `fly_fail.py` named this exact trap.
 
 ## 11. Glossary
 

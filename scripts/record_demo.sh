@@ -238,11 +238,25 @@ if [[ "${TELEM:-0}" == "1" ]]; then
     TELEM_FS="${TELEM_FS:-$(( H / 90 ))}"
     (( TELEM_FS < 9 )) && TELEM_FS=9
     log "  telemetry font ${TELEM_FS}pt for ${H}px tall canvas"
+    # MODULES=motorfail loads repo modules from mavproxy_modules/ so a command
+    # can be typed at the MAV> prompt on camera. MAVProxy resolves an external
+    # module by its BARE name, so the file is motorfail.py, not
+    # mavproxy_motorfail.py (§7 Gotchas).
+    MP_CMD=""
+    for mod in ${MODULES:-}; do
+        MP_CMD="${MP_CMD}module load ${mod}; "
+    done
+    [[ -n "$MP_CMD" ]] && log "  loading MAVProxy modules: ${MODULES}"
+    # allowSendEvents: xterm DISCARDS synthetic key events by default, so
+    # `xdotool type --window` silently does nothing. Without this resource a
+    # command cannot be typed into the pane on camera.
     setsid xterm -geometry 80x64+${GZ_W}+0 -fa Monospace -fs "$TELEM_FS" \
+        -xrm 'XTerm*allowSendEvents:true' \
         -bg black -fg green -title "MAVProxy telemetry" \
         -e bash -lc "source ~/ardupilot/venv-ardupilot/bin/activate && \
+            PYTHONPATH=$REPO/mavproxy_modules \
             mavproxy.py --master tcp:127.0.0.1:5760 --out 127.0.0.1:$FANOUT \
-                        --force-connected 2>&1 | tee \"$MAVPROXY_LOG\"" \
+                        --force-connected ${MP_CMD:+--cmd \"$MP_CMD\"} 2>&1 | tee \"$MAVPROXY_LOG\"" \
         >/dev/null 2>&1 &
 
     TWIN=""
