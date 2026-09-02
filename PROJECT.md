@@ -236,7 +236,8 @@ Next action is Phase 4 (§8 Next actions).
 | [docker/gz/gui-record.config](docker/gz/gui-record.config) | Minimal Gazebo GUI for recording — 3D view only, no docked panels |
 | [scripts/make_patches.sh](scripts/make_patches.sh) | Capture the ArduPilot-tree changes into `patches/`; run after any edit there |
 | [scripts/apply_patches.sh](scripts/apply_patches.sh) | Re-apply `patches/` to the ArduPilot tree after a fresh clone or a wiped submodule |
-| [docs/ARDUPILOT_CHANGES.md](docs/ARDUPILOT_CHANGES.md) | Every ArduPilot-tree edit as a numbered snippet, with the file path and why each one is where it is. Line numbers are pinned to the bases in `patches/BASE` — regenerate rather than trust after a rebase |
+| [docs/ARDUPILOT_CHANGES.md](docs/ARDUPILOT_CHANGES.md) | Every ArduPilot-tree edit as a numbered snippet, added lines marked, with why each one is where it is. **Generated** — do not hand-edit |
+| [scripts/make_changes_doc.py](scripts/make_changes_doc.py) | Regenerates `docs/ARDUPILOT_CHANGES.md` from the live ArduPilot tree. Re-run after any rebase; line numbers are only valid against the bases in `patches/BASE` |
 | [mavproxy_modules/motorfail.py](mavproxy_modules/motorfail.py) | MAVProxy module: `motorfail <1-4> [on\|off]` sends `MOTOR_FAILURE_SET`. Put the directory on `PYTHONPATH`, then `module load motorfail` |
 | [scripts/fly_motorfail.py](scripts/fly_motorfail.py) | Phase 5/6 flight: take off, cruise, kill a motor with `MOTOR_FAILURE_SET`, log the fall. `KILL_VIA=module` types the command into the recorder's MAVProxy pane so it is visible on camera |
 | [scripts/test_motorfail_ground.py](scripts/test_motorfail_ground.py) | Phase 5 ground test: hover, sample `SERVO_OUTPUT_RAW`, fail a motor, sample again, restore. Isolates "does the output change" from "does it fall" |
